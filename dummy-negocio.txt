@@ -1,0 +1,15 @@
+Nombre: Café La Esquina (NEGOCIO DE PRUEBA - datos falsos, solo para la demo)
+Horario: Lunes a sábado de 8am a 8pm, domingo cerrado
+Ubicación: Av. Reforma 123, colonia Centro, a media cuadra del metro Juárez
+Wifi: Sí, gratis, la clave la da el mesero
+Métodos de pago: Efectivo y tarjeta, no aceptamos transferencia
+Estacionamiento: No tenemos, pero hay estacionamiento público a la vuelta
+Menú:
+- Café americano $35
+- Café con leche $40
+- Capuchino $45
+- Chocolate caliente $45
+- Sandwich de jamón y queso $65
+- Croissant $30
+- Pan de elote $28
+Promociones: 2x1 en café americano de 8am a 10am, todos los días

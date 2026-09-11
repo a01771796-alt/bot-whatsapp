@@ -1,0 +1,7 @@
+node_modules/
+.env
+pedidos.json
+casos-dificiles.json
+tickets.json
+*.log
+.claude/
