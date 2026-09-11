@@ -21,11 +21,11 @@
 // ============================================================
 
 const fs = require('fs');
-const path = require('path');
 const { crearDescargadorConCache } = require('./csv');
+const { rutaArchivoDatos } = require('./almacenamiento');
 
 const descargar = crearDescargadorConCache('casos aprendidos');
-const ARCHIVO_CASOS_DIFICILES = path.join(__dirname, 'casos-dificiles.json');
+const ARCHIVO_CASOS_DIFICILES = rutaArchivoDatos('casos-dificiles.json');
 
 // Devuelve el texto de la pestana "Aprendizaje" del Google Sheet, o ''
 // si el negocio todavia no configuro esa pestana (es opcional).

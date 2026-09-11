@@ -13,9 +13,9 @@
 // ============================================================
 
 const fs = require('fs');
-const path = require('path');
+const { rutaArchivoDatos } = require('./almacenamiento');
 
-const ARCHIVO_TICKETS = path.join(__dirname, 'tickets.json');
+const ARCHIVO_TICKETS = rutaArchivoDatos('tickets.json');
 
 function leerTickets() {
   if (!fs.existsSync(ARCHIVO_TICKETS)) return [];

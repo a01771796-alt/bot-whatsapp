@@ -8,10 +8,10 @@
 // ============================================================
 
 const fs = require('fs');
-const path = require('path');
 const { enviarMensajeWhatsApp } = require('./whatsapp');
+const { rutaArchivoDatos } = require('./almacenamiento');
 
-const ARCHIVO_PEDIDOS = path.join(__dirname, 'pedidos.json');
+const ARCHIVO_PEDIDOS = rutaArchivoDatos('pedidos.json');
 
 function guardarPedido(numeroCliente, detallePedido) {
   let pedidos = [];
