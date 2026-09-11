@@ -138,6 +138,19 @@ function obtenerTicketPorId(id) {
   return leerTickets().find((t) => t.id === id) || null;
 }
 
+// El ticket sin resolver mas reciente de un cliente (de cualquier
+// categoria). Se usa desde la pantalla de chat (ver dashboard.js): al
+// mandarle un mensaje al cliente desde ahi, se actualiza el
+// "respuestaEnviada" de su ticket abierto, si tiene uno, para que la
+// tabla de tickets refleje lo ultimo que se le dijo.
+function obtenerTicketAbiertoPorCliente(numeroCliente) {
+  const abiertos = leerTickets()
+    .filter((t) => t.cliente === numeroCliente && t.estado !== 'RESUELTO')
+    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+  return abiertos[0] || null;
+}
+
 module.exports = {
   crearTicket,
   actualizarEstadoTicket,
@@ -145,5 +158,6 @@ module.exports = {
   existeTicketAbiertoIgual,
   obtenerTickets,
   obtenerTicketPorId,
+  obtenerTicketAbiertoPorCliente,
   calcularPrioridad,
 };

@@ -25,6 +25,7 @@ const { guardarPedido, avisarAlDuenio } = require('./orders');
 const { contieneContenidoGrave, RESPUESTA_NEUTRAL_PARA_EL_CLIENTE } = require('./seguridad');
 const { obtenerCasosAprendidos, registrarCasoDificil } = require('./aprendizaje');
 const { crearTicket, existeTicketAbiertoIgual } = require('./tickets');
+const { agregarMensaje, obtenerUltimosMensajes } = require('./conversaciones');
 const { router: rutasDashboard, notificarTicketAlDuenio } = require('./dashboard');
 
 // Si algo se nos escapa de todos los try/catch (un error asincrono que no
@@ -54,13 +55,12 @@ const MENSAJE_FALLA_TECNICA =
   'Tuvimos un problema técnico por un momento. Intenta escribir de nuevo en unos minutos, o si es urgente, márcanos por teléfono.';
 
 // --- Memoria en RAM del servidor -----------------------------------------
-// OJO: todo esto se borra si el servidor se reinicia (por ejemplo al hacer un
-// deploy nuevo). Para un negocio chico esto es aceptable: si el cliente vuelve
-// a escribir, el bot simplemente retoma la conversacion desde cero.
-
-// Historial de conversacion por cliente, con la hora del ultimo mensaje para
-// poder limpiar conversaciones viejas y no acumular memoria para siempre.
-const conversaciones = new Map();
+// OJO: esto se borra si el servidor se reinicia (por ejemplo al hacer un
+// deploy nuevo) -- pero a diferencia del historial de conversacion (que
+// ahora vive en conversaciones.json, en disco persistente, ver
+// conversaciones.js), esto es informacion de corta duracion que no pasa
+// nada perderla: en el peor caso, un mensaje viejo se procesa una vez de
+// mas, o un limite de flood se resetea antes de tiempo.
 
 // IDs de mensajes ya procesados (Meta a veces reenvia el mismo mensaje si no
 // contestamos rapido). Evita que el bot conteste dos veces lo mismo.
@@ -72,16 +72,12 @@ const idsMensajesProcesados = new Map();
 const contadorMensajesPorNumero = new Map();
 const LIMITE_MENSAJES_POR_MINUTO = 20;
 
-// Limpieza periodica de memoria: quita conversaciones inactivas por mas de 2
-// horas, e IDs de mensajes de hace mas de 15 minutos.
+// Limpieza periodica de memoria: quita IDs de mensajes de hace mas de 15
+// minutos, para no acumularlos para siempre.
 setInterval(() => {
   const ahora = Date.now();
-  const DOS_HORAS = 2 * 60 * 60 * 1000;
   const QUINCE_MINUTOS = 15 * 60 * 1000;
 
-  for (const [numero, datos] of conversaciones) {
-    if (ahora - datos.ultimaActividad > DOS_HORAS) conversaciones.delete(numero);
-  }
   for (const [id, marcaDeTiempo] of idsMensajesProcesados) {
     if (ahora - marcaDeTiempo > QUINCE_MINUTOS) idsMensajesProcesados.delete(id);
   }
@@ -161,6 +157,8 @@ app.post('/webhook', async (req, res) => {
     if (mensaje.type && mensaje.type !== 'text') {
       const respuestaTipo = RESPUESTAS_POR_TIPO_NO_SOPORTADO[mensaje.type] ||
         'Por ahora solo puedo leer mensajes de texto 🙏 ¿me lo escribes con palabras?';
+      agregarMensaje(numeroCliente, 'cliente', `[mensaje de tipo "${mensaje.type}", no soportado]`);
+      agregarMensaje(numeroCliente, 'bot', respuestaTipo);
       await enviarMensajeWhatsApp(numeroCliente, respuestaTipo);
       return;
     }
@@ -168,11 +166,17 @@ app.post('/webhook', async (req, res) => {
     const texto = mensaje.text?.body;
     if (!texto) return; // Mensaje de texto vacio o con un formato inesperado: se ignora.
 
+    // Se guarda el mensaje del cliente en el historial completo de la
+    // conversacion (ver conversaciones.js) ANTES de cualquier otra cosa,
+    // para que quede registrado incluso si mas adelante truena algo.
+    agregarMensaje(numeroCliente, 'cliente', texto);
+
     // --- Red de seguridad: amenazas, autolesion, etc ---------------------
     // Esto se revisa ANTES de mandarle nada a la IA. No confiamos en que la
     // IA sola detecte bien este tipo de contenido: aqui es una regla fija,
     // siempre la misma respuesta neutral al cliente y aviso urgente al dueno.
     if (contieneContenidoGrave(texto)) {
+      agregarMensaje(numeroCliente, 'bot', RESPUESTA_NEUTRAL_PARA_EL_CLIENTE);
       await enviarMensajeWhatsApp(numeroCliente, RESPUESTA_NEUTRAL_PARA_EL_CLIENTE);
       const ticket = crearTicket({
         numeroCliente,
@@ -186,15 +190,10 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    // Guardamos el historial de esta conversacion (solo los ultimos 6 mensajes,
-    // para no gastar de mas al hablar con la inteligencia artificial).
-    if (!conversaciones.has(numeroCliente)) {
-      conversaciones.set(numeroCliente, { mensajes: [], ultimaActividad: Date.now() });
-    }
-    const conversacion = conversaciones.get(numeroCliente);
-    conversacion.mensajes.push({ rol: 'cliente', texto });
-    conversacion.mensajes = conversacion.mensajes.slice(-6);
-    conversacion.ultimaActividad = Date.now();
+    // Le mandamos a la IA los ultimos 6 mensajes de la conversacion (no toda
+    // la historia, para no gastar de mas en cada llamada), leidos del
+    // historial persistido -- ya incluye el mensaje que se acaba de guardar.
+    const historial = obtenerUltimosMensajes(numeroCliente, 6);
 
     const [contextoNegocio, casosAprendidos] = await Promise.all([
       obtenerContextoDelNegocio(),
@@ -204,7 +203,7 @@ app.post('/webhook', async (req, res) => {
     const respuesta = await preguntarAClaude({
       contextoNegocio,
       casosAprendidos,
-      historial: conversacion.mensajes,
+      historial,
     });
 
     // Si la IA misma detecto algo urgente (amenaza, violencia, autolesion, etc), lo
@@ -212,6 +211,7 @@ app.post('/webhook', async (req, res) => {
     // clave: mismo texto neutral fijo, mismo aviso urgente al dueno. No confiamos en
     // que la IA elija bien las palabras del aviso para algo tan delicado.
     if (respuesta.esUrgente) {
+      agregarMensaje(numeroCliente, 'bot', RESPUESTA_NEUTRAL_PARA_EL_CLIENTE);
       await enviarMensajeWhatsApp(numeroCliente, RESPUESTA_NEUTRAL_PARA_EL_CLIENTE);
       const ticket = crearTicket({
         numeroCliente,
@@ -230,7 +230,7 @@ app.post('/webhook', async (req, res) => {
     const textoParaElCliente = respuesta.textoParaElCliente ||
       'Gracias por tu mensaje, en un momento te contesta alguien del negocio.';
 
-    conversacion.mensajes.push({ rol: 'bot', texto: textoParaElCliente });
+    agregarMensaje(numeroCliente, 'bot', textoParaElCliente);
 
     await enviarMensajeWhatsApp(numeroCliente, textoParaElCliente);
 
@@ -266,6 +266,7 @@ app.post('/webhook', async (req, res) => {
     console.error('Error procesando el mensaje:', error);
     if (numeroCliente) {
       try {
+        agregarMensaje(numeroCliente, 'bot', MENSAJE_FALLA_TECNICA);
         await enviarMensajeWhatsApp(numeroCliente, MENSAJE_FALLA_TECNICA);
         registrarCasoDificil({ numeroCliente, mensaje: '(error tecnico)', motivo: 'error_tecnico' });
       } catch (errorSecundario) {

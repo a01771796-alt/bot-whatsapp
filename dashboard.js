@@ -7,18 +7,14 @@
 //
 //   GET  /tickets                 -> dashboard con metricas y la lista de tickets
 //   GET  /ticket/:id/revisar      -> marca el ticket como "en revision"
-//   GET  /ticket/:id/contactar    -> muestra un formulario para escribir la respuesta
-//   POST /ticket/:id/contactar    -> manda esa respuesta al cliente (NO cambia el estado)
 //   GET  /ticket/:id/resolver     -> marca el ticket como "resuelto" directamente
+//   GET  /conversacion            -> chat completo con un cliente (?numero=...), o buscador si no hay numero
+//   POST /conversacion/enviar     -> manda un mensaje al cliente desde el chat
 //
-// "Contactar al cliente" y "Marcar como resuelto" son acciones independientes
-// a proposito: el dueno puede escribirle al cliente varias veces (o resolverlo
-// sin escribirle nada, si ya lo arreglo por telefono/en persona) antes de
-// cerrar el ticket. El dueno escribe su propia respuesta (no un mensaje
-// generico) -- asi el bot puede decirle al cliente "voy a confirmar esto con
-// el negocio" para cosas que no sabe (disponibilidad, stock del dia, etc), y
-// cuando el dueno contesta desde este formulario, ESA respuesta especifica le
-// llega al cliente por WhatsApp.
+// "Marcar como resuelto" es una accion independiente de contestarle al
+// cliente -- el dueno puede escribirle varias veces desde la pantalla de
+// conversacion (o resolver sin escribirle nada, si ya lo arreglo por
+// telefono/en persona) antes de cerrar el ticket.
 //
 // Las rutas piden "?token=..." que debe coincidir con TOKEN_DASHBOARD del
 // .env. Sin eso, cualquiera que adivine la URL podria ver o mover tickets
@@ -27,8 +23,9 @@
 // ============================================================
 
 const express = require('express');
-const { obtenerTickets, obtenerTicketPorId, actualizarEstadoTicket, registrarRespuestaEnviada } = require('./tickets');
+const { obtenerTickets, actualizarEstadoTicket, registrarRespuestaEnviada, obtenerTicketAbiertoPorCliente } = require('./tickets');
 const { enviarMensajeWhatsApp, enviarBotonConLinkWhatsApp } = require('./whatsapp');
+const { agregarMensaje, obtenerConversacion } = require('./conversaciones');
 
 const router = express.Router();
 router.use(express.urlencoded({ extended: true })); // Para leer el formulario de respuesta.
@@ -45,6 +42,11 @@ function urlBase() {
 // Link con el token ya incluido, listo para pegarse en un mensaje de WhatsApp.
 function linkAccion(idTicket, accion) {
   return `${urlBase()}/ticket/${encodeURIComponent(idTicket)}/${accion}?token=${process.env.TOKEN_DASHBOARD}`;
+}
+
+// Link directo a la pantalla de chat con un cliente especifico.
+function linkConversacion(numeroCliente) {
+  return `${urlBase()}/conversacion?numero=${encodeURIComponent(numeroCliente)}&token=${process.env.TOKEN_DASHBOARD}`;
 }
 
 // Le manda al dueno el aviso de un ticket nuevo: un mensaje de texto con el
@@ -74,7 +76,7 @@ async function notificarTicketAlDuenio(ticket) {
 
   await enviarMensajeWhatsApp(numeroDuenio, resumen);
   await enviarBotonConLinkWhatsApp(numeroDuenio, `Ticket ${ticket.id}`, 'Marcar en revisión', linkAccion(ticket.id, 'revisar'));
-  await enviarBotonConLinkWhatsApp(numeroDuenio, `Ticket ${ticket.id}`, 'Contactar cliente', linkAccion(ticket.id, 'contactar'));
+  await enviarBotonConLinkWhatsApp(numeroDuenio, `Ticket ${ticket.id}`, 'Ver conversación', linkConversacion(ticket.cliente));
   await enviarBotonConLinkWhatsApp(numeroDuenio, `Ticket ${ticket.id}`, 'Marcar resuelto', linkAccion(ticket.id, 'resolver'));
 }
 
@@ -110,11 +112,10 @@ router.get('/tickets', (req, res) => {
       <td>${escaparHtml(t.cliente)}</td>
       <td>${escaparHtml(t.categoria)}</td>
       <td><span class="etiqueta prioridad-${t.prioridad}">${t.prioridad}</span></td>
-      <td>${escaparHtml(t.solicitud)}</td>
+      <td><a href="${linkConversacion(t.cliente)}" target="_blank" rel="noopener">${escaparHtml(t.solicitud)}</a></td>
       <td><span class="etiqueta estado-${t.estado}">${t.estado.replace('_', ' ')}</span></td>
       <td class="acciones">
         ${t.estado === 'PENDIENTE' ? `<a href="/ticket/${t.id}/revisar?token=${req.query.token}" target="_blank" rel="noopener">Marcar en revisión</a>` : ''}
-        ${t.estado !== 'RESUELTO' ? `<a href="/ticket/${t.id}/contactar?token=${req.query.token}" target="_blank" rel="noopener">Contactar al cliente</a>` : ''}
         ${t.estado !== 'RESUELTO' ? `<a href="/ticket/${t.id}/resolver?token=${req.query.token}" target="_blank" rel="noopener">Marcar como resuelto</a>` : ''}
       </td>
     </tr>
@@ -151,7 +152,10 @@ router.get('/tickets', (req, res) => {
     <body>
       <div class="barra-superior">
         <h1>Tickets del bot ☕</h1>
-        <a class="boton-actualizar" href="/tickets?token=${req.query.token}">🔄 Actualizar</a>
+        <div style="display:flex;gap:8px;">
+          <a class="boton-actualizar" href="/conversacion?token=${req.query.token}">💬 Conversaciones</a>
+          <a class="boton-actualizar" href="/tickets?token=${req.query.token}">🔄 Actualizar</a>
+        </div>
       </div>
       <p style="font-size:.8rem;color:#666;margin-top:-6px;">
         Los links de acción abren en una pestaña nueva. Esta página se actualiza sola cada
@@ -224,14 +228,54 @@ router.get('/ticket/:id/resolver', (req, res) => {
   `);
 });
 
-// Paso 1: mostrar el formulario con el mensaje del cliente y una caja de texto
-// para que el dueno escriba su respuesta real. Esto NO marca el ticket como
-// resuelto -- eso es el boton aparte de "Marcar como resuelto".
-router.get('/ticket/:id/contactar', (req, res) => {
+// Formatea la hora de un mensaje para mostrarla junto a su burbuja.
+function formatearHora(fecha) {
+  return new Date(fecha).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Formatea la fecha (sin hora) para los separadores tipo "11/09/2026" que
+// aparecen cuando cambia el dia dentro de la conversacion.
+function formatearFecha(fecha) {
+  return new Date(fecha).toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+// Arma las burbujas de la conversacion en orden cronologico, con un
+// separador de fecha cada vez que el dia cambia (como en WhatsApp de verdad).
+function armarBurbujas(mensajes) {
+  let fechaAnterior = null;
+
+  return mensajes.map((m) => {
+    const fechaMsg = formatearFecha(m.fecha);
+    const divisor = fechaMsg !== fechaAnterior ? `<div class="divisor-fecha">${fechaMsg}</div>` : '';
+    fechaAnterior = fechaMsg;
+
+    const etiquetaAutor = m.rol === 'bot' ? '🤖 Bot' : m.rol === 'dueno' ? '👤 Tú' : '';
+
+    return `
+      ${divisor}
+      <div class="fila fila-${m.rol}">
+        <div class="burbuja burbuja-${m.rol}">
+          <div class="texto-burbuja">${escaparHtml(m.texto)}</div>
+          <div class="hora-burbuja">${etiquetaAutor ? etiquetaAutor + ' · ' : ''}${formatearHora(m.fecha)}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// Pantalla de chat completa con un cliente -- imita la interfaz de WhatsApp
+// (burbujas, cliente de un lado, bot/dueno del otro). Si no se pasa
+// "?numero=..." en la URL, se muestra solo el buscador, para poder llegar
+// aqui directo (sin pasar por un ticket) y escribir el numero a mano.
+router.get('/conversacion', (req, res) => {
   if (!tokenValido(req)) return res.status(403).send('No autorizado.');
 
-  const ticket = obtenerTicketPorId(req.params.id);
-  if (!ticket) return res.status(404).send('Ese ticket no existe (o ya fue borrado).');
+  const token = req.query.token;
+  const numero = (req.query.numero || '').trim();
+  const huboError = req.query.error === '1';
+
+  const mensajes = numero ? obtenerConversacion(numero) : [];
+  const burbujas = armarBurbujas(mensajes);
 
   res.send(`
     <!doctype html>
@@ -239,63 +283,97 @@ router.get('/ticket/:id/contactar', (req, res) => {
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Contactar al cliente</title>
+      <title>Conversación${numero ? ' · ' + escaparHtml(numero) : ''}</title>
       <style>
-        body { font-family: system-ui, sans-serif; background: #f7f5f2; color: #222; padding: 20px; max-width: 480px; margin: 0 auto; }
-        .mensaje-cliente { background: white; border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
-        textarea { width: 100%; box-sizing: border-box; font-size: 1rem; padding: 10px; border-radius: 8px; border: 1px solid #ccc; font-family: inherit; }
-        button { margin-top: 12px; padding: 12px 18px; font-size: 1rem; border-radius: 8px; border: none; background: #1a7a34; color: white; font-weight: 600; }
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #e9e3d8; color: #222; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
+        .barra-superior { background: #1a7a34; color: white; padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .barra-superior a { color: white; text-decoration: none; font-size: .85rem; white-space: nowrap; }
+        .barra-superior h1 { font-size: 1rem; margin: 0; flex: 1; word-break: break-all; }
+        .buscar { background: white; padding: 10px 16px; display: flex; gap: 8px; border-bottom: 1px solid #ddd; }
+        .buscar input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; font-size: .9rem; }
+        .buscar button { padding: 8px 14px; border-radius: 8px; border: none; background: #1a7a34; color: white; font-weight: 600; }
+        .aviso-error { background: #fde2e1; color: #a3242a; padding: 8px 16px; font-size: .85rem; }
+        #mensajes { flex: 1; overflow-y: auto; padding: 16px; }
+        .divisor-fecha { text-align: center; font-size: .75rem; color: #888; margin: 14px 0 10px; }
+        .fila { display: flex; margin-bottom: 10px; }
+        .fila-cliente { justify-content: flex-start; }
+        .fila-bot, .fila-dueno { justify-content: flex-end; }
+        .burbuja { max-width: 78%; padding: 8px 12px; border-radius: 12px; font-size: .92rem; line-height: 1.35; box-shadow: 0 1px 1px rgba(0,0,0,.06); }
+        .burbuja-cliente { background: white; border-bottom-left-radius: 2px; }
+        .burbuja-bot { background: #dcf5df; border-bottom-right-radius: 2px; }
+        .burbuja-dueno { background: #1a7a34; color: white; border-bottom-right-radius: 2px; }
+        .texto-burbuja { white-space: pre-wrap; word-break: break-word; }
+        .hora-burbuja { font-size: .68rem; opacity: .7; margin-top: 4px; text-align: right; }
+        .sin-mensajes, .sin-numero { text-align: center; color: #888; margin-top: 40px; font-size: .9rem; padding: 0 20px; }
+        .barra-envio { background: white; border-top: 1px solid #ddd; padding: 10px 12px; display: flex; gap: 8px; align-items: flex-end; }
+        .barra-envio textarea { flex: 1; resize: none; padding: 10px; border-radius: 10px; border: 1px solid #ccc; font-family: inherit; font-size: .95rem; max-height: 120px; }
+        .barra-envio button { padding: 10px 16px; border-radius: 10px; border: none; background: #1a7a34; color: white; font-weight: 600; }
       </style>
     </head>
     <body>
-      <h2>Contactar al cliente</h2>
-      <p>Ticket ${escaparHtml(ticket.id)} — categoría ${escaparHtml(ticket.categoria)}</p>
-      <div class="mensaje-cliente">
-        <b>El cliente escribió:</b><br>"${escaparHtml(ticket.solicitud)}"
+      <div class="barra-superior">
+        <a href="/tickets?token=${token}">← Tickets</a>
+        <h1>${numero ? escaparHtml(numero) : 'Buscar conversación'}</h1>
       </div>
-      <form method="POST" action="/ticket/${ticket.id}/contactar?token=${req.query.token}">
-        <label for="mensaje"><b>Tu respuesta (se le manda tal cual por WhatsApp):</b></label><br>
-        <textarea id="mensaje" name="mensaje" rows="5" placeholder="Escribe aquí lo que le quieres contestar..."></textarea>
-        <br>
-        <button type="submit">Enviar mensaje</button>
+      <form class="buscar" method="GET" action="/conversacion">
+        <input type="hidden" name="token" value="${token}">
+        <input type="text" name="numero" placeholder="Número de cliente (ej. 5217223490354)" value="${escaparHtml(numero)}">
+        <button type="submit">Ir</button>
       </form>
-      <p style="font-size:.8rem;color:#666;">Esto solo le manda el mensaje al cliente. Cuando el tema quede resuelto, usa el botón "Marcar como resuelto" en el dashboard.</p>
+      ${huboError ? '<div class="aviso-error">Ojo: el último mensaje no se pudo mandar por WhatsApp (revisa los logs del servidor).</div>' : ''}
+      ${numero ? `
+        <div id="mensajes">
+          ${burbujas || '<p class="sin-mensajes">Todavía no hay mensajes con este cliente.</p>'}
+        </div>
+        <form class="barra-envio" method="POST" action="/conversacion/enviar?token=${token}">
+          <input type="hidden" name="numero" value="${escaparHtml(numero)}">
+          <textarea id="mensaje" name="mensaje" rows="1" placeholder="Escribe un mensaje..." required></textarea>
+          <button type="submit">Enviar</button>
+        </form>
+      ` : `<p class="sin-numero">Busca un número de cliente arriba, o entra desde un ticket en <a href="/tickets?token=${token}">la lista de tickets</a>.</p>`}
+      <script>
+        var contenedor = document.getElementById('mensajes');
+        if (contenedor) contenedor.scrollTop = contenedor.scrollHeight;
+
+        // Se actualiza sola cada 8 segundos, igual que el dashboard de tickets --
+        // pero se salta el refresh si ya empezaste a escribir un mensaje, para
+        // no borrarte lo que llevas escrito a la mitad.
+        var textarea = document.getElementById('mensaje');
+        setTimeout(function () {
+          if (!textarea || textarea.value.trim() === '') location.reload();
+        }, 8000);
+      </script>
     </body>
     </html>
   `);
 });
 
-// Paso 2: se envia el formulario -- mandamos la respuesta del dueno al
-// cliente por WhatsApp. El estado del ticket NO cambia aqui a proposito.
-router.post('/ticket/:id/contactar', async (req, res) => {
+// Manda un mensaje al cliente desde la pantalla de chat -- como si fuera
+// un chat real. Si el cliente tiene un ticket abierto, tambien se deja
+// anotado ahi como su ultima respuesta, para que la tabla de tickets lo
+// refleje sin tener que abrir la conversacion.
+router.post('/conversacion/enviar', async (req, res) => {
   if (!tokenValido(req)) return res.status(403).send('No autorizado.');
 
+  const numero = (req.body.numero || '').trim();
   const mensaje = (req.body.mensaje || '').trim();
-  if (!mensaje) return res.status(400).send('Escribe un mensaje antes de enviar.');
+  if (!numero || !mensaje) return res.status(400).send('Falta el número de cliente o el mensaje.');
 
-  const ticket = registrarRespuestaEnviada(req.params.id, mensaje);
-  if (!ticket) return res.status(404).send('Ese ticket no existe (o ya fue borrado).');
+  agregarMensaje(numero, 'dueno', mensaje);
 
   let seAvisoAlCliente = false;
   try {
-    seAvisoAlCliente = await enviarMensajeWhatsApp(ticket.cliente, mensaje);
+    seAvisoAlCliente = await enviarMensajeWhatsApp(numero, mensaje);
   } catch (error) {
     console.error('No se pudo mandar el mensaje al cliente:', error.message);
   }
 
-  const mensajeAviso = seAvisoAlCliente
-    ? 'Tu mensaje ya se le mandó al cliente por WhatsApp.'
-    : '<b style="color:#a3242a">Ojo: no se pudo mandar tu mensaje por WhatsApp</b> (revisa los logs del servidor) — igual puedes escribirle tú mismo.';
+  const ticketAbierto = obtenerTicketAbiertoPorCliente(numero);
+  if (ticketAbierto) registrarRespuestaEnviada(ticketAbierto.id, mensaje);
 
-  res.send(`
-    <!doctype html><html lang="es"><meta charset="utf-8">
-    <body style="font-family:system-ui,sans-serif;padding:24px;">
-      <h2>✅ Listo</h2>
-      <p>${mensajeAviso}</p>
-      <p>El ticket <b>${escaparHtml(ticket.id)}</b> sigue como estaba. Cuando el tema quede resuelto, márcalo desde el dashboard.</p>
-      <p>Puedes cerrar esta pantalla.</p>
-    </body></html>
-  `);
+  const parametroError = seAvisoAlCliente ? '' : '&error=1';
+  res.redirect(`/conversacion?numero=${encodeURIComponent(numero)}&token=${process.env.TOKEN_DASHBOARD}${parametroError}`);
 });
 
-module.exports = { router, linkAccion, notificarTicketAlDuenio };
+module.exports = { router, linkAccion, linkConversacion, notificarTicketAlDuenio };

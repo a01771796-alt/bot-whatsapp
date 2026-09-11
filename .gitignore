@@ -3,5 +3,6 @@ node_modules/
 pedidos.json
 casos-dificiles.json
 tickets.json
+conversaciones.json
 *.log
 .claude/

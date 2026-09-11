@@ -138,8 +138,16 @@ async function preguntarAClaude({ contextoNegocio, casosAprendidos, historial })
   // "copia ese patron": empieza a contestar en texto plano en vez de JSON,
   // aunque el system prompt diga lo contrario. Con todo en un solo mensaje,
   // la IA nunca ve un ejemplo de si misma rompiendo el formato.
+  // El historial puede traer mensajes de 3 roles distintos ahora (ver
+  // conversaciones.js): "cliente", "bot" (respuestas automaticas de la IA)
+  // y "dueno" (mensajes que el encargado del negocio le escribio a mano
+  // desde el dashboard). Los tres se etiquetan por separado en la
+  // transcripcion para que la IA sepa distinguir su propia respuesta
+  // anterior de algo que ya le dijo una persona real -- y no repita ni
+  // contradiga lo que el dueno ya le contesto al cliente.
+  const ETIQUETA_POR_ROL = { cliente: 'Cliente', bot: 'Bot', dueno: 'Encargado del negocio' };
   const transcripcion = historial
-    .map((m) => `${m.rol === 'cliente' ? 'Cliente' : 'Bot'}: ${m.texto}`)
+    .map((m) => `${ETIQUETA_POR_ROL[m.rol] || 'Bot'}: ${m.texto}`)
     .join('\n');
 
   const mensajes = [
