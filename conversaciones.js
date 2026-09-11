@@ -67,10 +67,24 @@ function obtenerUltimosMensajes(numeroCliente, cantidad) {
   return obtenerConversacion(numeroCliente).slice(-cantidad);
 }
 
+// Guarda una copia de TODAS las conversaciones actuales en un archivo
+// aparte, ANTES de un borrado total (ver /reiniciar en dashboard.js) --
+// mismo criterio que respaldarTickets() en tickets.js.
+function respaldarConversaciones(marcaDeTiempo) {
+  const archivoRespaldo = rutaArchivoDatos(`respaldo_conversaciones_${marcaDeTiempo}.json`);
+  fs.writeFileSync(archivoRespaldo, JSON.stringify(leerTodas(), null, 2));
+}
+
 // Borra TODAS las conversaciones. Se usa desde la ruta de mantenimiento del
 // dashboard (ver dashboard.js) para reiniciar el sistema durante pruebas.
 function vaciarConversaciones() {
   guardarTodas({});
 }
 
-module.exports = { agregarMensaje, obtenerConversacion, obtenerUltimosMensajes, vaciarConversaciones };
+module.exports = {
+  agregarMensaje,
+  obtenerConversacion,
+  obtenerUltimosMensajes,
+  respaldarConversaciones,
+  vaciarConversaciones,
+};

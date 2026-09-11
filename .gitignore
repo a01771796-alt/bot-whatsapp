@@ -4,5 +4,6 @@ pedidos.json
 casos-dificiles.json
 tickets.json
 conversaciones.json
+respaldo_*.json
 *.log
 .claude/

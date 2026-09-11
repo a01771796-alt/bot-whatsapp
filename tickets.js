@@ -130,6 +130,15 @@ function existeTicketAbiertoIgual(numeroCliente, categoria) {
   );
 }
 
+// Guarda una copia de TODOS los tickets actuales en un archivo aparte,
+// ANTES de un borrado total (ver /reiniciar en dashboard.js) -- para poder
+// recuperarlos a mano si alguien confirma el borrado por error. Cada
+// respaldo queda con su propia fecha en el nombre, nunca se sobreescribe.
+function respaldarTickets(marcaDeTiempo) {
+  const archivoRespaldo = rutaArchivoDatos(`respaldo_tickets_${marcaDeTiempo}.json`);
+  fs.writeFileSync(archivoRespaldo, JSON.stringify(leerTickets(), null, 2));
+}
+
 // Borra TODOS los tickets. Se usa desde la ruta de mantenimiento del
 // dashboard (ver dashboard.js) para reiniciar el sistema durante pruebas.
 function vaciarTickets() {
@@ -162,6 +171,7 @@ module.exports = {
   actualizarEstadoTicket,
   registrarRespuestaEnviada,
   existeTicketAbiertoIgual,
+  respaldarTickets,
   vaciarTickets,
   obtenerTickets,
   obtenerTicketPorId,

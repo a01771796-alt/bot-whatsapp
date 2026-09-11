@@ -23,9 +23,16 @@
 // ============================================================
 
 const express = require('express');
-const { obtenerTickets, actualizarEstadoTicket, registrarRespuestaEnviada, obtenerTicketAbiertoPorCliente, vaciarTickets } = require('./tickets');
+const {
+  obtenerTickets,
+  actualizarEstadoTicket,
+  registrarRespuestaEnviada,
+  obtenerTicketAbiertoPorCliente,
+  respaldarTickets,
+  vaciarTickets,
+} = require('./tickets');
 const { enviarMensajeWhatsApp, enviarBotonConLinkWhatsApp } = require('./whatsapp');
-const { agregarMensaje, obtenerConversacion, vaciarConversaciones } = require('./conversaciones');
+const { agregarMensaje, obtenerConversacion, respaldarConversaciones, vaciarConversaciones } = require('./conversaciones');
 
 const router = express.Router();
 router.use(express.urlencoded({ extended: true })); // Para leer el formulario de respuesta.
@@ -376,28 +383,63 @@ router.post('/conversacion/enviar', async (req, res) => {
   res.redirect(`/conversacion?numero=${encodeURIComponent(numero)}&token=${process.env.TOKEN_DASHBOARD}${parametroError}`);
 });
 
+// Frase exacta que hay que escribir en la pantalla de confirmacion para
+// habilitar el boton de borrar -- ver el <script> de GET /reiniciar.
+const FRASE_CONFIRMACION = 'BORRAR TODO';
+
 // Pantalla de confirmacion antes de borrar TODO (tickets y conversaciones).
 // Es GET (para poder llegar con un link) pero el borrado real es un POST
 // aparte -- asi un link mal clickeado, un prefetch del navegador, o un bot
-// que sigue links automaticamente no puede disparar el borrado por accidente.
+// que sigue links automaticamente no puede disparar el borrado por
+// accidente. Encima de eso, el boton de borrar empieza deshabilitado: solo
+// se activa si escribes la frase "BORRAR TODO" tal cual -- un solo clic
+// (por accidente, o por el dedo resbalado en el celular) no alcanza.
 router.get('/reiniciar', (req, res) => {
   if (!tokenValido(req)) return res.status(403).send('No autorizado.');
 
   res.send(`
-    <!doctype html><html lang="es"><meta charset="utf-8">
+    <!doctype html><html lang="es">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+    </head>
     <body style="font-family:system-ui,sans-serif;padding:24px;max-width:420px;margin:0 auto;">
       <h2>⚠️ Reiniciar el dashboard</h2>
-      <p>Esto borra <b>TODOS</b> los tickets y <b>TODAS</b> las conversaciones guardadas. No se puede deshacer.</p>
+      <p>Esto borra <b>TODOS</b> los tickets y <b>TODAS</b> las conversaciones guardadas.</p>
+      <p style="font-size:.85rem;color:#666;">Se guarda un respaldo automático antes de borrar, pero recuperarlo requiere entrar al servidor a mano -- no hay un botón de "deshacer" rápido.</p>
       <form method="POST" action="/reiniciar?token=${req.query.token}">
-        <button type="submit" style="padding:12px 18px;border-radius:8px;border:none;background:#a3242a;color:white;font-weight:600;">Sí, borrar todo</button>
+        <label for="confirmacion">Escribe <b>${FRASE_CONFIRMACION}</b> para confirmar:</label><br>
+        <input type="text" id="confirmacion" name="confirmacion" autocomplete="off" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #ccc;font-size:1rem;margin:8px 0;">
+        <br>
+        <button type="submit" id="boton-borrar" disabled style="width:100%;padding:12px 18px;border-radius:8px;border:none;background:#a3242a;color:white;font-weight:600;opacity:.5;">Sí, borrar todo</button>
       </form>
       <p style="margin-top:16px;"><a href="/tickets?token=${req.query.token}">Cancelar y volver a tickets</a></p>
+      <script>
+        var input = document.getElementById('confirmacion');
+        var boton = document.getElementById('boton-borrar');
+        input.addEventListener('input', function () {
+          var listo = input.value.trim().toUpperCase() === ${JSON.stringify(FRASE_CONFIRMACION)};
+          boton.disabled = !listo;
+          boton.style.opacity = listo ? '1' : '.5';
+        });
+      </script>
     </body></html>
   `);
 });
 
 router.post('/reiniciar', (req, res) => {
   if (!tokenValido(req)) return res.status(403).send('No autorizado.');
+
+  // Igual se valida la frase del lado del servidor -- el boton deshabilitado
+  // en el HTML es solo una ayuda visual, no una proteccion real (cualquiera
+  // podria mandar el POST directo sin pasar por el formulario).
+  if ((req.body.confirmacion || '').trim().toUpperCase() !== FRASE_CONFIRMACION) {
+    return res.status(400).send(`Escribe exactamente "${FRASE_CONFIRMACION}" para confirmar el borrado.`);
+  }
+
+  const marcaDeTiempo = new Date().toISOString().replace(/[:.]/g, '-');
+  respaldarTickets(marcaDeTiempo);
+  respaldarConversaciones(marcaDeTiempo);
 
   vaciarTickets();
   vaciarConversaciones();
@@ -407,6 +449,7 @@ router.post('/reiniciar', (req, res) => {
     <body style="font-family:system-ui,sans-serif;padding:24px;">
       <h2>✅ Listo</h2>
       <p>Se borraron todos los tickets y conversaciones.</p>
+      <p style="font-size:.85rem;color:#666;">Quedó un respaldo con la marca de tiempo <code>${marcaDeTiempo}</code> guardado en el servidor.</p>
       <p><a href="/tickets?token=${req.query.token}">Volver a tickets</a></p>
     </body></html>
   `);
