@@ -67,4 +67,10 @@ function obtenerUltimosMensajes(numeroCliente, cantidad) {
   return obtenerConversacion(numeroCliente).slice(-cantidad);
 }
 
-module.exports = { agregarMensaje, obtenerConversacion, obtenerUltimosMensajes };
+// Borra TODAS las conversaciones. Se usa desde la ruta de mantenimiento del
+// dashboard (ver dashboard.js) para reiniciar el sistema durante pruebas.
+function vaciarConversaciones() {
+  guardarTodas({});
+}
+
+module.exports = { agregarMensaje, obtenerConversacion, obtenerUltimosMensajes, vaciarConversaciones };

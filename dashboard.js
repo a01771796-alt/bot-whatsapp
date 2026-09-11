@@ -23,9 +23,9 @@
 // ============================================================
 
 const express = require('express');
-const { obtenerTickets, actualizarEstadoTicket, registrarRespuestaEnviada, obtenerTicketAbiertoPorCliente } = require('./tickets');
+const { obtenerTickets, actualizarEstadoTicket, registrarRespuestaEnviada, obtenerTicketAbiertoPorCliente, vaciarTickets } = require('./tickets');
 const { enviarMensajeWhatsApp, enviarBotonConLinkWhatsApp } = require('./whatsapp');
-const { agregarMensaje, obtenerConversacion } = require('./conversaciones');
+const { agregarMensaje, obtenerConversacion, vaciarConversaciones } = require('./conversaciones');
 
 const router = express.Router();
 router.use(express.urlencoded({ extended: true })); // Para leer el formulario de respuesta.
@@ -374,6 +374,42 @@ router.post('/conversacion/enviar', async (req, res) => {
 
   const parametroError = seAvisoAlCliente ? '' : '&error=1';
   res.redirect(`/conversacion?numero=${encodeURIComponent(numero)}&token=${process.env.TOKEN_DASHBOARD}${parametroError}`);
+});
+
+// Pantalla de confirmacion antes de borrar TODO (tickets y conversaciones).
+// Es GET (para poder llegar con un link) pero el borrado real es un POST
+// aparte -- asi un link mal clickeado, un prefetch del navegador, o un bot
+// que sigue links automaticamente no puede disparar el borrado por accidente.
+router.get('/reiniciar', (req, res) => {
+  if (!tokenValido(req)) return res.status(403).send('No autorizado.');
+
+  res.send(`
+    <!doctype html><html lang="es"><meta charset="utf-8">
+    <body style="font-family:system-ui,sans-serif;padding:24px;max-width:420px;margin:0 auto;">
+      <h2>⚠️ Reiniciar el dashboard</h2>
+      <p>Esto borra <b>TODOS</b> los tickets y <b>TODAS</b> las conversaciones guardadas. No se puede deshacer.</p>
+      <form method="POST" action="/reiniciar?token=${req.query.token}">
+        <button type="submit" style="padding:12px 18px;border-radius:8px;border:none;background:#a3242a;color:white;font-weight:600;">Sí, borrar todo</button>
+      </form>
+      <p style="margin-top:16px;"><a href="/tickets?token=${req.query.token}">Cancelar y volver a tickets</a></p>
+    </body></html>
+  `);
+});
+
+router.post('/reiniciar', (req, res) => {
+  if (!tokenValido(req)) return res.status(403).send('No autorizado.');
+
+  vaciarTickets();
+  vaciarConversaciones();
+
+  res.send(`
+    <!doctype html><html lang="es"><meta charset="utf-8">
+    <body style="font-family:system-ui,sans-serif;padding:24px;">
+      <h2>✅ Listo</h2>
+      <p>Se borraron todos los tickets y conversaciones.</p>
+      <p><a href="/tickets?token=${req.query.token}">Volver a tickets</a></p>
+    </body></html>
+  `);
 });
 
 module.exports = { router, linkAccion, linkConversacion, notificarTicketAlDuenio };

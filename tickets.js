@@ -130,6 +130,12 @@ function existeTicketAbiertoIgual(numeroCliente, categoria) {
   );
 }
 
+// Borra TODOS los tickets. Se usa desde la ruta de mantenimiento del
+// dashboard (ver dashboard.js) para reiniciar el sistema durante pruebas.
+function vaciarTickets() {
+  guardarTickets([]);
+}
+
 function obtenerTickets() {
   return leerTickets();
 }
@@ -156,6 +162,7 @@ module.exports = {
   actualizarEstadoTicket,
   registrarRespuestaEnviada,
   existeTicketAbiertoIgual,
+  vaciarTickets,
   obtenerTickets,
   obtenerTicketPorId,
   obtenerTicketAbiertoPorCliente,
