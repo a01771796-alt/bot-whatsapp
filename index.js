@@ -24,7 +24,7 @@ const { enviarMensajeWhatsApp } = require('./whatsapp');
 const { guardarPedido, avisarAlDuenio } = require('./orders');
 const { contieneContenidoGrave, RESPUESTA_NEUTRAL_PARA_EL_CLIENTE } = require('./seguridad');
 const { obtenerCasosAprendidos, registrarCasoDificil } = require('./aprendizaje');
-const { crearTicket, existeTicketAbiertoIgual } = require('./tickets');
+const { crearTicket, existeTicketAbiertoIgual, obtenerTicketAbiertoPorCliente } = require('./tickets');
 const { agregarMensaje, obtenerUltimosMensajes } = require('./conversaciones');
 const { router: rutasDashboard, notificarTicketAlDuenio } = require('./dashboard');
 
@@ -153,13 +153,32 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
+    // Si este cliente ya tiene un ticket sin resolver (PENDIENTE o EN_REVISION),
+    // el dueno ya lo esta atendiendo a mano desde el chat del dashboard -- el
+    // bot se queda callado con TODO lo que mande el cliente mientras tanto
+    // (fotos, audios, texto normal, todo) para no contestar algo que se cruce
+    // o contradiga lo que el dueno ya le dijo. Los mensajes se siguen
+    // guardando en el historial como siempre, solo que sin respuesta
+    // automatica. En cuanto el ticket se marca RESUELTO, esto vuelve a dar
+    // "false" solo con que el cliente escriba de nuevo -- no hace falta
+    // limpiar ningun estado aparte.
+    //
+    // La UNICA excepcion es el filtro de seguridad de mas abajo (palabras
+    // clave de amenazas/autolesion): eso no es la IA, es una regla fija, y
+    // siempre se revisa sin importar si hay ticket abierto o no -- preferimos
+    // un aviso de mas a perder una emergencia real (mismo criterio que ya
+    // se usa en existeTicketAbiertoIgual, ver tickets.js).
+    const ticketAbierto = obtenerTicketAbiertoPorCliente(numeroCliente);
+
     // Tipos de mensaje que el bot no puede leer (solo entiende texto por ahora).
     if (mensaje.type && mensaje.type !== 'text') {
-      const respuestaTipo = RESPUESTAS_POR_TIPO_NO_SOPORTADO[mensaje.type] ||
-        'Por ahora solo puedo leer mensajes de texto 🙏 ¿me lo escribes con palabras?';
       agregarMensaje(numeroCliente, 'cliente', `[mensaje de tipo "${mensaje.type}", no soportado]`);
-      agregarMensaje(numeroCliente, 'bot', respuestaTipo);
-      await enviarMensajeWhatsApp(numeroCliente, respuestaTipo);
+      if (!ticketAbierto) {
+        const respuestaTipo = RESPUESTAS_POR_TIPO_NO_SOPORTADO[mensaje.type] ||
+          'Por ahora solo puedo leer mensajes de texto 🙏 ¿me lo escribes con palabras?';
+        agregarMensaje(numeroCliente, 'bot', respuestaTipo);
+        await enviarMensajeWhatsApp(numeroCliente, respuestaTipo);
+      }
       return;
     }
 
@@ -172,9 +191,11 @@ app.post('/webhook', async (req, res) => {
     agregarMensaje(numeroCliente, 'cliente', texto);
 
     // --- Red de seguridad: amenazas, autolesion, etc ---------------------
-    // Esto se revisa ANTES de mandarle nada a la IA. No confiamos en que la
-    // IA sola detecte bien este tipo de contenido: aqui es una regla fija,
-    // siempre la misma respuesta neutral al cliente y aviso urgente al dueno.
+    // Esto se revisa ANTES de mandarle nada a la IA, y ANTES del check de
+    // ticket abierto de arriba (a proposito, ver el comentario ahi). No
+    // confiamos en que la IA sola detecte bien este tipo de contenido: aqui
+    // es una regla fija, siempre la misma respuesta neutral al cliente y
+    // aviso urgente al dueno.
     if (contieneContenidoGrave(texto)) {
       agregarMensaje(numeroCliente, 'bot', RESPUESTA_NEUTRAL_PARA_EL_CLIENTE);
       await enviarMensajeWhatsApp(numeroCliente, RESPUESTA_NEUTRAL_PARA_EL_CLIENTE);
@@ -189,6 +210,11 @@ app.post('/webhook', async (req, res) => {
       registrarCasoDificil({ numeroCliente, mensaje: texto, motivo: 'urgente' });
       return;
     }
+
+    // Si hay un ticket abierto, el mensaje ya quedo guardado en el historial
+    // arriba -- aqui es donde el bot se queda callado, sin llamar a la IA ni
+    // mandar nada. (Ver el comentario grande donde se calculo "ticketAbierto".)
+    if (ticketAbierto) return;
 
     // Le mandamos a la IA los ultimos 6 mensajes de la conversacion (no toda
     // la historia, para no gastar de mas en cada llamada), leidos del
