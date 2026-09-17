@@ -21,7 +21,8 @@ const express = require('express');
 const { obtenerContextoDelNegocio } = require('./menu');
 const { preguntarAClaude } = require('./claude');
 const { enviarMensajeWhatsApp } = require('./whatsapp');
-const { guardarPedido, avisarAlDuenio } = require('./orders');
+const { gestor: gestorPedidos, guardarPedido, avisarAlDuenio } = require('./orders');
+const { crearProgramador } = require('./programador');
 const { contieneContenidoGrave, RESPUESTA_NEUTRAL_PARA_EL_CLIENTE } = require('./seguridad');
 const { obtenerCasosAprendidos, registrarCasoDificil } = require('./aprendizaje');
 const { crearTicket, existeTicketAbiertoIgual, obtenerTicketAbiertoPorCliente } = require('./tickets');
@@ -304,6 +305,17 @@ app.post('/webhook', async (req, res) => {
 
 // Ruta simple para confirmar que el servidor esta vivo (util para monitoreo).
 app.get('/', (req, res) => res.send('Bot de WhatsApp funcionando correctamente ✅'));
+
+// Motor de reseñas post-pedido (Motor B, ver orders.js y programador.js) --
+// SOLO Motor B: no se llama nada de Motor A aqui a proposito, las recogidas
+// son el mismo dia y no aplican ventanas de recordatorio tipo 24h/2h (ver
+// la tabla de Precedentes en el CLAUDE.md general). Se activa con
+// ACTIVAR_SOLICITUD_RESENA=true en el .env; si no esta activo, este ciclo
+// no hace nada.
+const programadorPedidos = crearProgramador(gestorPedidos, {
+  obtenerInfoNegocioCsv: obtenerContextoDelNegocio,
+});
+programadorPedidos.iniciarProgramador();
 
 app.listen(PUERTO, () => {
   console.log(`Servidor escuchando en el puerto ${PUERTO}`);

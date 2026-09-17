@@ -66,4 +66,29 @@ async function enviarBotonConLinkWhatsApp(numeroDestino, textoCuerpo, textoBoton
   });
 }
 
-module.exports = { enviarMensajeWhatsApp, enviarBotonConLinkWhatsApp };
+// Manda un mensaje de PLANTILLA (Message Template) pre-aprobada por Meta. A
+// diferencia de enviarMensajeWhatsApp (texto libre), esto SI se puede mandar
+// aunque hayan pasado mas de 24h desde el ultimo mensaje del cliente -- por
+// eso lo usa el motor de recordatorios y reseñas (ver recordatorios.js y
+// seguimientoPostEvento.js): son mensajes que el negocio inicia por su
+// cuenta, no respuestas a algo que el cliente acaba de escribir, y Meta
+// exige plantilla aprobada para ese caso.
+//
+// "nombrePlantilla" debe existir YA APROBADA en Meta Business Manager
+// (WhatsApp Manager -> Message Templates) con esa cantidad exacta de
+// variables {{1}}, {{2}}, etc. "parametros" es un arreglo de texto plano, en
+// el mismo orden que las variables de la plantilla.
+async function enviarPlantillaWhatsApp(numeroDestino, nombrePlantilla, idioma, parametros = []) {
+  return mandarAWhatsApp(numeroDestino, {
+    type: 'template',
+    template: {
+      name: nombrePlantilla,
+      language: { code: idioma },
+      components: parametros.length
+        ? [{ type: 'body', parameters: parametros.map((texto) => ({ type: 'text', text: String(texto) })) }]
+        : [],
+    },
+  });
+}
+
+module.exports = { enviarMensajeWhatsApp, enviarBotonConLinkWhatsApp, enviarPlantillaWhatsApp };

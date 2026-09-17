@@ -35,4 +35,58 @@ function crearDescargadorConCache(nombreParaLogs) {
   };
 }
 
-module.exports = { crearDescargadorConCache };
+// Parser simple de CSV: soporta campos entre comillas dobles (incluyendo
+// comas y comillas escapadas "" dentro del campo), que es lo que produce
+// Google Sheets al "Publicar en la Web" como CSV. No es un parser RFC4180
+// completo, pero cubre los casos reales de este proyecto -- lo usa el motor
+// de recordatorios/reseñas (ver eventoProgramado.js, seguimientoPostEvento.js)
+// para leer filas estructuradas (horario, link de reseña) de la informacion
+// del negocio como datos, no como texto plano para la IA.
+function parseCsv(texto) {
+  const filas = [];
+  let fila = [];
+  let campo = '';
+  let entreComillas = false;
+
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+
+    if (entreComillas) {
+      if (c === '"') {
+        if (texto[i + 1] === '"') {
+          campo += '"';
+          i++;
+        } else {
+          entreComillas = false;
+        }
+      } else {
+        campo += c;
+      }
+      continue;
+    }
+
+    if (c === '"') {
+      entreComillas = true;
+    } else if (c === ',') {
+      fila.push(campo);
+      campo = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && texto[i + 1] === '\n') i++;
+      fila.push(campo);
+      filas.push(fila);
+      fila = [];
+      campo = '';
+    } else {
+      campo += c;
+    }
+  }
+
+  if (campo !== '' || fila.length) {
+    fila.push(campo);
+    filas.push(fila);
+  }
+
+  return filas.filter((f) => f.some((valor) => valor.trim() !== ''));
+}
+
+module.exports = { crearDescargadorConCache, parseCsv };

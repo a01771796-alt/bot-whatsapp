@@ -6,6 +6,8 @@
 // iban en un correo de Gmail; aqui van en el aviso de WhatsApp al dueno).
 //
 //   GET  /tickets                 -> dashboard con metricas y la lista de tickets
+//   GET  /pedidos                 -> lista de pedidos tomados por el bot
+//   POST /pedidos/:id/entregado   -> marca un pedido como entregado (dispara Motor B, ver seguimientoPostEvento.js)
 //   GET  /ticket/:id/revisar      -> marca el ticket como "en revision"
 //   GET  /ticket/:id/resolver     -> marca el ticket como "resuelto" directamente
 //   GET  /conversacion            -> chat completo con un cliente (?numero=...), o buscador si no hay numero
@@ -33,6 +35,7 @@ const {
 } = require('./tickets');
 const { enviarMensajeWhatsApp, enviarBotonConLinkWhatsApp } = require('./whatsapp');
 const { agregarMensaje, obtenerConversacion, respaldarConversaciones, vaciarConversaciones } = require('./conversaciones');
+const { gestor: gestorPedidos, obtenerPedidos } = require('./orders');
 
 const router = express.Router();
 router.use(express.urlencoded({ extended: true })); // Para leer el formulario de respuesta.
@@ -160,6 +163,7 @@ router.get('/tickets', (req, res) => {
       <div class="barra-superior">
         <h1>Tickets del bot ☕</h1>
         <div style="display:flex;gap:8px;">
+          <a class="boton-actualizar" href="/pedidos?token=${req.query.token}">📦 Pedidos</a>
           <a class="boton-actualizar" href="/conversacion?token=${req.query.token}">💬 Conversaciones</a>
           <a class="boton-actualizar" href="/tickets?token=${req.query.token}">🔄 Actualizar</a>
         </div>
@@ -197,6 +201,98 @@ router.get('/tickets', (req, res) => {
     </body>
     </html>
   `);
+});
+
+// Vista simple de los pedidos que el bot tomo (ver orders.js) -- separada
+// de los tickets porque un pedido normal no es un caso escalado, solo algo
+// que el dueno debe preparar y, cuando lo entrega, marcar aqui para que
+// dispare la solicitud de reseña (ver seguimientoPostEvento.js).
+router.get('/pedidos', (req, res) => {
+  if (!tokenValido(req)) return res.status(403).send('No autorizado.');
+
+  const token = req.query.token;
+  const pedidos = obtenerPedidos().slice().sort((a, b) => new Date(b.creadaEn) - new Date(a.creadaEn));
+
+  const filas = pedidos.map((p) => `
+    <tr>
+      <td>${new Date(p.creadaEn).toLocaleString('es-MX')}</td>
+      <td><a href="${linkConversacion(p.cliente)}" target="_blank" rel="noopener">${escaparHtml(p.nombreCliente || p.cliente)}</a></td>
+      <td>${escaparHtml(p.descripcion)}</td>
+      <td><span class="etiqueta estado-pedido-${p.estado}">${p.estado === 'COMPLETADA' ? 'ENTREGADO' : p.estado}</span></td>
+      <td class="acciones">
+        ${p.estado !== 'COMPLETADA' ? `
+          <form method="POST" action="/pedidos/${encodeURIComponent(p.id)}/entregado?token=${token}" style="display:inline;">
+            <button type="submit">Marcar como entregado</button>
+          </form>
+        ` : ''}
+      </td>
+    </tr>
+  `).join('');
+
+  res.send(`
+    <!doctype html>
+    <html lang="es">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Pedidos</title>
+      <style>
+        body { font-family: system-ui, sans-serif; background: #f7f5f2; color: #222; margin: 0; padding: 16px; }
+        h1 { font-size: 1.3rem; }
+        table { width: 100%; border-collapse: collapse; background: white; border-radius: 10px; overflow: hidden; font-size: .85rem; }
+        th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #eee; vertical-align: top; }
+        .tabla-scroll { overflow-x: auto; }
+        .etiqueta { padding: 2px 8px; border-radius: 999px; font-size: .75rem; font-weight: 600; white-space: nowrap; }
+        .estado-pedido-PENDIENTE { background: #fff3cd; color: #8a6d1a; }
+        .estado-pedido-COMPLETADA { background: #dcf5df; color: #1a7a34; }
+        .acciones form { display: inline-block; margin-right: 8px; }
+        .acciones button { padding: 5px 10px; border-radius: 8px; border: none; background: #1a7a34; color: white; font-size: .78rem; font-weight: 600; cursor: pointer; }
+        .barra-superior { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+        .boton-actualizar { display: inline-block; padding: 6px 14px; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); text-decoration: none; color: #222; font-size: .85rem; }
+      </style>
+    </head>
+    <body>
+      <div class="barra-superior">
+        <h1>Pedidos 📦</h1>
+        <div style="display:flex;gap:8px;">
+          <a class="boton-actualizar" href="/tickets?token=${token}">🎫 Tickets</a>
+          <a class="boton-actualizar" href="/pedidos?token=${token}">🔄 Actualizar</a>
+        </div>
+      </div>
+      <p style="font-size:.8rem;color:#666;">
+        Marca un pedido como "entregado" cuando el cliente ya se lo llevo -- eso dispara la
+        solicitud automática de reseña (si está activada, ver ACTIVAR_SOLICITUD_RESENA en el .env).
+      </p>
+      <div class="tabla-scroll">
+        <table>
+          <thead>
+            <tr><th>Fecha</th><th>Cliente</th><th>Pedido</th><th>Estado</th><th>Acciones</th></tr>
+          </thead>
+          <tbody>${filas || '<tr><td colspan="5">Todavía no hay pedidos.</td></tr>'}</tbody>
+        </table>
+      </div>
+      <script>
+        setTimeout(() => location.reload(), 8000);
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// Marca un pedido como entregado -- unico disparador del reloj de la
+// solicitud de reseña (ver seguimientoPostEvento.js: cuenta la espera
+// configurada a partir de "completadaEn", que se llena aqui via
+// actualizarEstadoEvento en eventoProgramado.js). Accion manual del dueno
+// porque el sistema no tiene forma de saber solo si el pedido ya se
+// entrego. No le manda ningun mensaje al cliente.
+router.post('/pedidos/:id/entregado', (req, res) => {
+  if (!tokenValido(req)) return res.status(403).send('No autorizado.');
+
+  const pedido = gestorPedidos.obtenerEventoPorId(req.params.id);
+  if (!pedido) return res.status(404).send('Ese pedido no existe (o ya fue borrado).');
+
+  gestorPedidos.actualizarEstadoEvento(pedido.id, 'COMPLETADA');
+  res.redirect(`/pedidos?token=${req.query.token}`);
 });
 
 router.get('/ticket/:id/revisar', (req, res) => {
@@ -405,7 +501,7 @@ router.get('/reiniciar', (req, res) => {
     </head>
     <body style="font-family:system-ui,sans-serif;padding:24px;max-width:420px;margin:0 auto;">
       <h2>⚠️ Reiniciar el dashboard</h2>
-      <p>Esto borra <b>TODOS</b> los tickets y <b>TODAS</b> las conversaciones guardadas.</p>
+      <p>Esto borra <b>TODOS</b> los tickets, <b>TODAS</b> las conversaciones y <b>TODOS</b> los pedidos guardados.</p>
       <p style="font-size:.85rem;color:#666;">Se guarda un respaldo automático antes de borrar, pero recuperarlo requiere entrar al servidor a mano -- no hay un botón de "deshacer" rápido.</p>
       <form method="POST" action="/reiniciar?token=${req.query.token}">
         <label for="confirmacion">Escribe <b>${FRASE_CONFIRMACION}</b> para confirmar:</label><br>
@@ -440,15 +536,17 @@ router.post('/reiniciar', (req, res) => {
   const marcaDeTiempo = new Date().toISOString().replace(/[:.]/g, '-');
   respaldarTickets(marcaDeTiempo);
   respaldarConversaciones(marcaDeTiempo);
+  gestorPedidos.respaldarEventos(marcaDeTiempo);
 
   vaciarTickets();
   vaciarConversaciones();
+  gestorPedidos.vaciarEventos();
 
   res.send(`
     <!doctype html><html lang="es"><meta charset="utf-8">
     <body style="font-family:system-ui,sans-serif;padding:24px;">
       <h2>✅ Listo</h2>
-      <p>Se borraron todos los tickets y conversaciones.</p>
+      <p>Se borraron todos los tickets, conversaciones y pedidos.</p>
       <p style="font-size:.85rem;color:#666;">Quedó un respaldo con la marca de tiempo <code>${marcaDeTiempo}</code> guardado en el servidor.</p>
       <p><a href="/tickets?token=${req.query.token}">Volver a tickets</a></p>
     </body></html>
