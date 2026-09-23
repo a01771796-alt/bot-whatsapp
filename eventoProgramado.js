@@ -39,9 +39,12 @@
 // ============================================================
 
 const fs = require('fs');
-const { rutaArchivoDatos } = require('./almacenamiento');
+const { rutaArchivoDatos, escribirArchivoDatos } = require('./almacenamiento');
 
 const ZONA_HORARIA = process.env.ZONA_HORARIA || 'America/Mexico_City';
+
+const MINUTOS_ENVIANDO_INTERRUMPIDO = 10;
+const MAX_INTENTOS_AVISO = 2;
 
 const NOMBRES_DIA = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const NOMBRES_MES = [
@@ -193,7 +196,7 @@ function crearGestorDeEventos(opciones = {}) {
   }
 
   function guardarEventos(eventos) {
-    fs.writeFileSync(ARCHIVO_EVENTOS, JSON.stringify(eventos, null, 2));
+    escribirArchivoDatos(ARCHIVO_EVENTOS, JSON.stringify(eventos, null, 2));
   }
 
   // datos: { cliente, nombreCliente, tipo, descripcion, duracionMin, fecha,
@@ -257,9 +260,51 @@ function crearGestorDeEventos(opciones = {}) {
     if (!evento) return null;
 
     if (!evento.seguimiento) evento.seguimiento = {};
-    evento.seguimiento[tipo] = { estado, intentoEn: new Date().toISOString() };
+    // "intentos" cuenta cuantas veces se ha empezado a mandar este aviso
+    // (cada 'ENVIANDO' suma uno) -- lo usa recuperarEnviandoInterrumpidos.
+    const previos = evento.seguimiento[tipo]?.intentos || 0;
+    evento.seguimiento[tipo] = {
+      estado,
+      intentoEn: new Date().toISOString(),
+      intentos: estado === 'ENVIANDO' ? previos + 1 : previos,
+    };
     guardarEventos(eventos);
     return evento;
+  }
+
+  // Se llama UNA vez al arrancar el bot (ver programador.js). Un aviso que
+  // quedo en 'ENVIANDO' hace mas de MINUTOS_ENVIANDO_INTERRUMPIDO minutos
+  // se corto a medio envio (crash/redeploy): si aun no llega al maximo de
+  // MAX_INTENTOS_AVISO intentos vuelve a 'PENDIENTE' para que el siguiente
+  // ciclo lo reintente; si ya lo alcanzo, queda 'FALLIDO' con error
+  // 'interrumpido'. Un registro viejo sin "intentos" cuenta como 1.
+  // Regresa cuantos avisos reintentara y cuantos marco FALLIDO.
+  function recuperarEnviandoInterrumpidos() {
+    const eventos = leerEventos();
+    const resultado = { reintentar: 0, fallidos: 0 };
+    const ahora = Date.now();
+
+    for (const evento of eventos) {
+      for (const aviso of Object.values(evento.seguimiento || {})) {
+        if (aviso.estado !== 'ENVIANDO') continue;
+        const minutos = (ahora - new Date(aviso.intentoEn).getTime()) / 60000;
+        if (!(minutos > MINUTOS_ENVIANDO_INTERRUMPIDO)) continue;
+
+        const intentos = aviso.intentos || 1;
+        aviso.intentos = intentos;
+        if (intentos >= MAX_INTENTOS_AVISO) {
+          aviso.estado = 'FALLIDO';
+          aviso.error = 'interrumpido';
+          resultado.fallidos++;
+        } else {
+          aviso.estado = 'PENDIENTE';
+          resultado.reintentar++;
+        }
+      }
+    }
+
+    if (resultado.reintentar || resultado.fallidos) guardarEventos(eventos);
+    return resultado;
   }
 
   // Guarda la respuesta del cliente a un recordatorio ("confirmo"/"cancelar",
@@ -272,6 +317,27 @@ function crearGestorDeEventos(opciones = {}) {
 
     evento.respuestaCliente = respuesta; // 'CONFIRMADA' | 'CANCELADA'
     if (respuesta === 'CANCELADA') evento.estado = 'CANCELADA';
+    guardarEventos(eventos);
+    return evento;
+  }
+
+  // Guarda en el evento el resultado del aviso al dueno que regreso
+  // avisarAlDueno (whatsapp.js): {estado: 'ENVIADO'|'FALLIDO', intentoEn,
+  // error, via}. Va aparte de "seguimiento" (que solo guarda estado/intentoEn
+  // de los recordatorios y reseñas) porque aqui tambien se guarda el error.
+  // Un resultado 'OMITIDO' (no hay OWNER_WHATSAPP_NUMBER) no se guarda.
+  // "campo" es donde se guarda: 'avisoDueno' por default (el aviso de evento
+  // nuevo). Un giro que manda OTRO aviso sobre el mismo evento (ej. "el
+  // cliente cancelo") usa su propio campo, para que un aviso exitoso no tape
+  // a uno que fallo.
+  function registrarAvisoDueno(idEvento, resultado, campo = 'avisoDueno') {
+    if (!resultado || resultado.estado === 'OMITIDO') return null;
+
+    const eventos = leerEventos();
+    const evento = eventos.find((e) => e.id === idEvento);
+    if (!evento) return null;
+
+    evento[campo] = resultado;
     guardarEventos(eventos);
     return evento;
   }
@@ -303,7 +369,9 @@ function crearGestorDeEventos(opciones = {}) {
     obtenerEventoPorId,
     actualizarEstadoEvento,
     actualizarSeguimiento,
+    recuperarEnviandoInterrumpidos,
     registrarRespuestaCliente,
+    registrarAvisoDueno,
     respaldarEventos,
     vaciarEventos,
   };

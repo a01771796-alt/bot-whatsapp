@@ -262,8 +262,8 @@ app.post('/webhook', async (req, res) => {
     await enviarMensajeWhatsApp(numeroCliente, textoParaElCliente);
 
     if (respuesta.esPedidoCompleto) {
-      guardarPedido(numeroCliente, respuesta.detallePedido);
-      await avisarAlDuenio(respuesta.detallePedido, numeroCliente);
+      const pedido = guardarPedido(numeroCliente, respuesta.detallePedido, cambio?.contacts?.[0]?.profile?.name);
+      await avisarAlDuenio(respuesta.detallePedido, numeroCliente, pedido.id);
     }
 
     if (respuesta.necesitaHumano) {

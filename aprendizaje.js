@@ -22,7 +22,7 @@
 
 const fs = require('fs');
 const { crearDescargadorConCache } = require('./csv');
-const { rutaArchivoDatos } = require('./almacenamiento');
+const { rutaArchivoDatos, escribirArchivoDatos } = require('./almacenamiento');
 
 const descargar = crearDescargadorConCache('casos aprendidos');
 const ARCHIVO_CASOS_DIFICILES = rutaArchivoDatos('casos-dificiles.json');
@@ -56,7 +56,7 @@ function registrarCasoDificil({ numeroCliente, mensaje, motivo }) {
     motivo, // ej: "necesita_humano", "urgente", "error_tecnico"
   });
 
-  fs.writeFileSync(ARCHIVO_CASOS_DIFICILES, JSON.stringify(casos, null, 2));
+  escribirArchivoDatos(ARCHIVO_CASOS_DIFICILES, JSON.stringify(casos, null, 2));
 }
 
 module.exports = { obtenerCasosAprendidos, registrarCasoDificil };

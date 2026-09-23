@@ -31,8 +31,10 @@
 // salones-belleza, o la misma que ya usa el chat).
 // ============================================================
 
+const fs = require('fs');
 const { parseCsv } = require('./csv');
-const { enviarPlantillaWhatsApp } = require('./whatsapp');
+const { enviarPlantillaWhatsApp, avisarAlDueno } = require('./whatsapp');
+const { rutaArchivoDatos, escribirArchivoDatos } = require('./almacenamiento');
 
 // Igual que en recordatorios.js: un aviso colgado en "ENVIANDO" por mas de
 // esto se asume que el proceso se murio a medio envio -- se resuelve a
@@ -40,6 +42,15 @@ const { enviarPlantillaWhatsApp } = require('./whatsapp');
 const MINUTOS_ENVIANDO_COLGADO = 20;
 
 const TIPO_SEGUIMIENTO = 'resena';
+
+// Un evento completado hace mas que esto ya no se pide reseña: pedirla dias
+// despues se siente fuera de lugar, y al corregir el link del Sheet no se
+// mandan de golpe todas las solicitudes atrasadas.
+const HORAS_MAXIMAS_DESDE_COMPLETADA = 48;
+
+// Solo se acepta un link de Google (cualquier otro sitio no sirve para pedir
+// una reseña de Google). Vale el dominio y sus subdominios.
+const DOMINIOS_GOOGLE = ['google.com', 'google.com.mx', 'g.page', 'g.co', 'goo.gl', 'maps.app.goo.gl', 'share.google'];
 
 function activo() {
   return process.env.ACTIVAR_SOLICITUD_RESENA === 'true';
@@ -52,6 +63,17 @@ function horasDeEspera() {
   return Number.isFinite(horas) && horas > 0 ? horas : 2;
 }
 
+function esLinkDeGoogle(texto) {
+  let url;
+  try {
+    url = new URL((texto || '').trim());
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  return DOMINIOS_GOOGLE.some((dominio) => url.hostname === dominio || url.hostname.endsWith(`.${dominio}`));
+}
+
 // Lee el link de reseña de Google desde el CSV de informacion del negocio.
 // Soporta las DOS convenciones de Sheet que ya usan los giros existentes:
 //   - Una sola celda de texto libre: "Link de reseña Google: https://..."
@@ -59,13 +81,13 @@ function horasDeEspera() {
 //   - Dos columnas "Campo,Valor": una fila con "Link de reseña Google" en la
 //     primera columna y la URL en la segunda (formato "Campo,Valor" que ya
 //     usan gimnasios/cafeteria para su hoja de informacion del negocio).
-// Acepta con o sin acento y valida que de verdad sea URL -- si el dueno
-// todavia no llena esa fila, o la escribe mal, se trata igual que si no
-// existiera (no se manda nada, se loguea, no se rompe nada). Exportada
+// Acepta con o sin acento y valida que de verdad sea un link de Google
+// (esLinkDeGoogle) -- si el dueno todavia no llena esa fila, la escribe mal o
+// pone un link que no es de Google, se trata igual que si no existiera (no se manda nada, se loguea, no se rompe nada). Exportada
 // aparte para poder probarla sin tocar red.
 function extraerLinkResena(csvInfo) {
   const filas = parseCsv(csvInfo || '');
-  const esUrl = (texto) => /^https?:\/\//i.test((texto || '').trim());
+  const esUrl = esLinkDeGoogle;
 
   for (const fila of filas) {
     const primeraColumna = (fila[0] || '').trim();
@@ -100,6 +122,7 @@ function leTocaSolicitarResena(evento) {
   }
 
   const minutosDesdeCompletada = (Date.now() - new Date(evento.completadaEn).getTime()) / 60000;
+  if (minutosDesdeCompletada > HORAS_MAXIMAS_DESDE_COMPLETADA * 60) return false;
   return minutosDesdeCompletada >= horasDeEspera() * 60;
 }
 
@@ -124,6 +147,48 @@ async function intentarSolicitudResena(gestorEventos, evento, linkResena, nombre
     gestorEventos.actualizarSeguimiento(evento.id, TIPO_SEGUIMIENTO, 'FALLIDO');
     console.error(`RESEÑAS: error inesperado mandando la solicitud para el evento ${evento.id}:`, error.message);
   }
+}
+
+// Aviso de configuracion al dueno: se manda UNA sola vez mientras el link siga
+// mal (la marca queda en disco, un reinicio no lo repite). Cuando el link
+// vuelve a ser valido se borra la marca, para avisar de nuevo si se rompe otra
+// vez. Un aviso 'OMITIDO' (sin OWNER_WHATSAPP_NUMBER) no cuenta como avisado.
+const CLAVE_AVISO_LINK = 'linkResena';
+
+function leerAvisosConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(rutaArchivoDatos('avisosConfig.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function guardarAvisosConfig(marcas) {
+  escribirArchivoDatos(rutaArchivoDatos('avisosConfig.json'), JSON.stringify(marcas, null, 2));
+}
+
+async function avisarLinkResenaInvalido(cantidadEsperando) {
+  const marcas = leerAvisosConfig();
+  if (marcas[CLAVE_AVISO_LINK]) return;
+
+  const resultado = await avisarAlDueno({
+    tipo: 'CONFIG',
+    resumen:
+      'Falta o está mal el link de reseña de Google en la información del negocio (fila "Link de reseña Google"; ' +
+      `debe ser de google.com, google.com.mx, g.page, g.co, goo.gl, maps.app.goo.gl o share.google). ${cantidadEsperando} cliente(s) esperando su solicitud de reseña.`,
+    referenciaId: 'RESENA',
+  });
+  if (resultado.estado === 'OMITIDO') return;
+
+  marcas[CLAVE_AVISO_LINK] = { avisadoEn: resultado.intentoEn, estado: resultado.estado };
+  guardarAvisosConfig(marcas);
+}
+
+function limpiarAvisoLinkResena() {
+  const marcas = leerAvisosConfig();
+  if (!marcas[CLAVE_AVISO_LINK]) return;
+  delete marcas[CLAVE_AVISO_LINK];
+  guardarAvisosConfig(marcas);
 }
 
 // Revisa TODOS los eventos y manda la solicitud de reseña a los que les
@@ -156,12 +221,14 @@ async function procesarSolicitudesDeResena(gestorEventos, obtenerInfoNegocioCsv)
       `RESEÑAS: falta (o esta mal escrita) la fila "Link de reseña Google: https://..." en la informacion del ` +
       `negocio -- ${eventosElegibles.length} evento(s) esperando, no se manda nada hasta que se llene.`
     );
+    await avisarLinkResenaInvalido(eventosElegibles.length);
     return;
   }
+  limpiarAvisoLinkResena();
 
   for (const evento of eventosElegibles) {
     await intentarSolicitudResena(gestorEventos, evento, linkResena, nombrePlantilla);
   }
 }
 
-module.exports = { activo, procesarSolicitudesDeResena, extraerLinkResena, leTocaSolicitarResena };
+module.exports = { activo, procesarSolicitudesDeResena, extraerLinkResena, esLinkDeGoogle, leTocaSolicitarResena };

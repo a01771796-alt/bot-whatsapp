@@ -13,7 +13,7 @@
 // ============================================================
 
 const fs = require('fs');
-const { rutaArchivoDatos } = require('./almacenamiento');
+const { rutaArchivoDatos, escribirArchivoDatos } = require('./almacenamiento');
 
 const ARCHIVO_TICKETS = rutaArchivoDatos('tickets.json');
 
@@ -27,7 +27,7 @@ function leerTickets() {
 }
 
 function guardarTickets(tickets) {
-  fs.writeFileSync(ARCHIVO_TICKETS, JSON.stringify(tickets, null, 2));
+  escribirArchivoDatos(ARCHIVO_TICKETS, JSON.stringify(tickets, null, 2));
 }
 
 // ID legible tipo TK-20260910-151042-3 (fecha + hora + numero de ticket).
@@ -116,6 +116,22 @@ function registrarRespuestaEnviada(id, mensaje) {
   return ticket;
 }
 
+// Guarda en el ticket el resultado del aviso al dueno que regreso
+// avisarAlDueno (whatsapp.js): {estado: 'ENVIADO'|'FALLIDO', intentoEn, error,
+// via}. El dashboard usa esto para marcar los tickets cuyo aviso no llego.
+// Un resultado 'OMITIDO' (no hay OWNER_WHATSAPP_NUMBER) no se guarda.
+function registrarAvisoDueno(id, resultado) {
+  if (!resultado || resultado.estado === 'OMITIDO') return null;
+
+  const tickets = leerTickets();
+  const ticket = tickets.find((t) => t.id === id);
+  if (!ticket) return null;
+
+  ticket.avisoDueno = resultado;
+  guardarTickets(tickets);
+  return ticket;
+}
+
 // Evita crear un ticket duplicado cuando el mismo cliente sigue escribiendo
 // despues de que ya se le escalo algo: si la IA mezcla el tema viejo (ya
 // abierto) con el mensaje nuevo y lo vuelve a clasificar igual, esto detecta
@@ -170,6 +186,7 @@ module.exports = {
   crearTicket,
   actualizarEstadoTicket,
   registrarRespuestaEnviada,
+  registrarAvisoDueno,
   existeTicketAbiertoIgual,
   respaldarTickets,
   vaciarTickets,

@@ -17,7 +17,7 @@
 // ============================================================
 
 const fs = require('fs');
-const { rutaArchivoDatos } = require('./almacenamiento');
+const { rutaArchivoDatos, escribirArchivoDatos } = require('./almacenamiento');
 
 const ARCHIVO_CONVERSACIONES = rutaArchivoDatos('conversaciones.json');
 
@@ -31,7 +31,7 @@ function leerTodas() {
 }
 
 function guardarTodas(conversaciones) {
-  fs.writeFileSync(ARCHIVO_CONVERSACIONES, JSON.stringify(conversaciones, null, 2));
+  escribirArchivoDatos(ARCHIVO_CONVERSACIONES, JSON.stringify(conversaciones, null, 2));
 }
 
 // Agrega un mensaje al historial de un cliente. "rol" es uno de:

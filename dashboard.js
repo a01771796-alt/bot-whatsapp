@@ -29,11 +29,12 @@ const {
   obtenerTickets,
   actualizarEstadoTicket,
   registrarRespuestaEnviada,
+  registrarAvisoDueno,
   obtenerTicketAbiertoPorCliente,
   respaldarTickets,
   vaciarTickets,
 } = require('./tickets');
-const { enviarMensajeWhatsApp, enviarBotonConLinkWhatsApp } = require('./whatsapp');
+const { enviarMensajeWhatsApp, avisarAlDueno } = require('./whatsapp');
 const { agregarMensaje, obtenerConversacion, respaldarConversaciones, vaciarConversaciones } = require('./conversaciones');
 const { gestor: gestorPedidos, obtenerPedidos } = require('./orders');
 
@@ -65,10 +66,13 @@ function linkConversacion(numeroCliente) {
 // por eso van separados en vez de ir todos los links juntos en un solo texto.
 // Equivalente al correo interno con asunto dinamico ("🚨 ALTA | QUEJA | ...")
 // del proyecto de Make.
+//
+// Todo el envio lo hace avisarAlDueno (whatsapp.js): si Meta rechaza el texto
+// (tipico cuando el dueno no le ha escrito al bot en 24 h), reintenta con la
+// plantilla Utility de respaldo -- que lleva solo el link de "Ver
+// conversacion", no los botones de revisar/resolver. El resultado se guarda
+// en el ticket (campo avisoDueno) y /tickets marca los que no llegaron.
 async function notificarTicketAlDuenio(ticket) {
-  const numeroDuenio = process.env.OWNER_WHATSAPP_NUMBER;
-  if (!numeroDuenio) return;
-
   const esAlta = ticket.prioridad === 'ALTA';
   const etiquetaPrioridad = esAlta ? '🚨 *ALTA*' : '🟡 MEDIA';
 
@@ -84,10 +88,18 @@ async function notificarTicketAlDuenio(ticket) {
       `Cliente: ${ticket.cliente}\n` +
       `Mensaje: "${ticket.solicitud}"`;
 
-  await enviarMensajeWhatsApp(numeroDuenio, resumen);
-  await enviarBotonConLinkWhatsApp(numeroDuenio, `Ticket ${ticket.id}`, 'Marcar en revisión', linkAccion(ticket.id, 'revisar'));
-  await enviarBotonConLinkWhatsApp(numeroDuenio, `Ticket ${ticket.id}`, 'Ver conversación', linkConversacion(ticket.cliente));
-  await enviarBotonConLinkWhatsApp(numeroDuenio, `Ticket ${ticket.id}`, 'Marcar resuelto', linkAccion(ticket.id, 'resolver'));
+  const resultado = await avisarAlDueno({
+    tipo: 'ticket',
+    resumen,
+    link: linkConversacion(ticket.cliente),
+    textoBoton: 'Ver conversación',
+    botonesExtra: [
+      { texto: 'Marcar en revisión', url: linkAccion(ticket.id, 'revisar') },
+      { texto: 'Marcar resuelto', url: linkAccion(ticket.id, 'resolver') },
+    ],
+    referenciaId: ticket.id,
+  });
+  registrarAvisoDueno(ticket.id, resultado);
 }
 
 // Evita que un texto con "<" o "&" del cliente rompa el HTML de la pagina.
@@ -96,6 +108,16 @@ function escaparHtml(texto) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// Marca visible para los registros (tickets, pedidos...) cuyo aviso al dueno
+// no llego por ningun medio (ver avisarAlDueno en whatsapp.js). Registros
+// sin el campo "avisoDueno", o con aviso ENVIADO, no muestran nada.
+function marcaAvisoFallido(avisoDueno) {
+  if (avisoDueno?.estado !== 'FALLIDO') return '';
+
+  const detalle = `${avisoDueno.error || 'sin detalle'} (${new Date(avisoDueno.intentoEn).toLocaleString('es-MX')})`;
+  return `<br><span class="etiqueta aviso-fallido" title="${escaparHtml(detalle)}">⚠️ Aviso al dueño no llegó</span>`;
 }
 
 router.get('/tickets', (req, res) => {
@@ -122,7 +144,10 @@ router.get('/tickets', (req, res) => {
       <td>${escaparHtml(t.cliente)}</td>
       <td>${escaparHtml(t.categoria)}</td>
       <td><span class="etiqueta prioridad-${t.prioridad}">${t.prioridad}</span></td>
-      <td><a href="${linkConversacion(t.cliente)}" target="_blank" rel="noopener">${escaparHtml(t.solicitud)}</a></td>
+      <td>
+        <a href="${linkConversacion(t.cliente)}" target="_blank" rel="noopener">${escaparHtml(t.solicitud)}</a>
+        ${marcaAvisoFallido(t.avisoDueno)}
+      </td>
       <td><span class="etiqueta estado-${t.estado}">${t.estado.replace('_', ' ')}</span></td>
       <td class="acciones">
         ${t.estado === 'PENDIENTE' ? `<a href="/ticket/${t.id}/revisar?token=${req.query.token}" target="_blank" rel="noopener">Marcar en revisión</a>` : ''}
@@ -154,6 +179,7 @@ router.get('/tickets', (req, res) => {
         .estado-PENDIENTE { background: #eee; color: #555; }
         .estado-EN_REVISION { background: #dbe9ff; color: #1a4a8a; }
         .estado-RESUELTO { background: #dcf5df; color: #1a7a34; }
+        .aviso-fallido { background: #fde2e1; color: #a3242a; display: inline-block; margin-top: 4px; cursor: help; }
         .acciones a { display: inline-block; margin-right: 8px; font-size: .8rem; }
         .barra-superior { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
         .boton-actualizar { display: inline-block; padding: 6px 14px; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); text-decoration: none; color: #222; font-size: .85rem; }
@@ -217,7 +243,7 @@ router.get('/pedidos', (req, res) => {
     <tr>
       <td>${new Date(p.creadaEn).toLocaleString('es-MX')}</td>
       <td><a href="${linkConversacion(p.cliente)}" target="_blank" rel="noopener">${escaparHtml(p.nombreCliente || p.cliente)}</a></td>
-      <td>${escaparHtml(p.descripcion)}</td>
+      <td>${escaparHtml(p.descripcion)}${marcaAvisoFallido(p.avisoDueno)}</td>
       <td><span class="etiqueta estado-pedido-${p.estado}">${p.estado === 'COMPLETADA' ? 'ENTREGADO' : p.estado}</span></td>
       <td class="acciones">
         ${p.estado !== 'COMPLETADA' ? `
@@ -245,6 +271,7 @@ router.get('/pedidos', (req, res) => {
         .etiqueta { padding: 2px 8px; border-radius: 999px; font-size: .75rem; font-weight: 600; white-space: nowrap; }
         .estado-pedido-PENDIENTE { background: #fff3cd; color: #8a6d1a; }
         .estado-pedido-COMPLETADA { background: #dcf5df; color: #1a7a34; }
+        .aviso-fallido { background: #fde2e1; color: #a3242a; display: inline-block; margin-top: 4px; cursor: help; }
         .acciones form { display: inline-block; margin-right: 8px; }
         .acciones button { padding: 5px 10px; border-radius: 8px; border: none; background: #1a7a34; color: white; font-size: .78rem; font-weight: 600; cursor: pointer; }
         .barra-superior { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }

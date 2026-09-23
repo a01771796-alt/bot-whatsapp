@@ -38,12 +38,25 @@ function fechaHoraDentroDe(minutos, zona = 'America/Mexico_City') {
 // contesta "ok" (o lo que se le indique) -- para probar
 // recordatorios.js/seguimientoPostEvento.js sin pegarle a la red real ni
 // depender de credenciales de WhatsApp.
-function instalarFetchFalso({ ok = true } = {}) {
+//
+// Opcional: "respuestas" es una lista de respuestas para las llamadas en
+// orden (la ultima se repite si hay mas llamadas que respuestas). Cada una
+// puede ser {ok, status, texto} (texto = cuerpo de la respuesta, ej. el JSON
+// de error de Meta) o un Error, para simular que la red se cae.
+function instalarFetchFalso({ ok = true, respuestas } = {}) {
   const llamadas = [];
   const original = global.fetch;
   global.fetch = async (url, opciones) => {
     llamadas.push({ url, body: JSON.parse(opciones.body) });
-    return { ok, text: async () => (ok ? '' : 'error simulado') };
+
+    const respuesta = respuestas ? respuestas[Math.min(llamadas.length, respuestas.length) - 1] : { ok };
+    if (respuesta instanceof Error) throw respuesta;
+
+    return {
+      ok: respuesta.ok,
+      status: respuesta.status ?? (respuesta.ok ? 200 : 400),
+      text: async () => respuesta.texto ?? (respuesta.ok ? '' : 'error simulado'),
+    };
   };
   return {
     llamadas,

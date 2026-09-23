@@ -25,7 +25,7 @@
 // ============================================================
 
 const { crearGestorDeEventos } = require('./eventoProgramado');
-const { enviarMensajeWhatsApp } = require('./whatsapp');
+const { avisarAlDueno } = require('./whatsapp');
 
 const gestor = crearGestorDeEventos({ archivo: 'pedidos.json', prefijoId: 'PEDIDO' });
 
@@ -38,22 +38,30 @@ function obtenerPedidos() {
   return gestor.obtenerEventos().filter((p) => p.id);
 }
 
-function guardarPedido(numeroCliente, detallePedido) {
+// nombreCliente: nombre del perfil de WhatsApp del cliente (opcional; el
+// dashboard /pedidos lo muestra en vez del numero cuando existe).
+function guardarPedido(numeroCliente, detallePedido, nombreCliente) {
   return gestor.crearEvento({
     cliente: numeroCliente,
+    nombreCliente: (nombreCliente || '').trim(),
     tipo: 'pedido',
     descripcion: (detallePedido || '').trim() || 'Pedido sin detalle',
   });
 }
 
-async function avisarAlDuenio(detallePedido, numeroCliente) {
-  const numeroDuenio = process.env.OWNER_WHATSAPP_NUMBER;
-
-  // Si el negocio todavia no configuro su numero, simplemente no avisamos
-  // a nadie (pero el pedido queda guardado igual).
-  if (!numeroDuenio) return;
-
-  await enviarMensajeWhatsApp(numeroDuenio, `Nuevo pedido de ${numeroCliente}:\n${detallePedido}`);
+// Avisa al dueno del pedido nuevo y guarda el resultado en el pedido (campo
+// avisoDueno; /pedidos marca los que no llegaron). Si el negocio todavia no
+// configuro su numero, avisarAlDueno no hace nada (el pedido queda guardado
+// igual). Si Meta rechaza el texto libre (dueno sin escribirle al bot en 24 h),
+// reintenta con la plantilla de respaldo -- ver avisarAlDueno en whatsapp.js.
+async function avisarAlDuenio(detallePedido, numeroCliente, idPedido) {
+  const resultado = await avisarAlDueno({
+    tipo: 'pedido',
+    resumen: `Nuevo pedido de ${numeroCliente}:\n${detallePedido}`,
+    referenciaId: idPedido,
+  });
+  gestor.registrarAvisoDueno(idPedido, resultado);
+  return resultado;
 }
 
 module.exports = { gestor, obtenerPedidos, guardarPedido, avisarAlDuenio };

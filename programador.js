@@ -66,6 +66,17 @@ function crearProgramador(gestorEventos, opciones = {}) {
   }
 
   function iniciarProgramador() {
+    // Avisos que se quedaron en ENVIANDO por un crash/redeploy: se reintentan
+    // (maximo 2 intentos) o quedan FALLIDO 'interrumpido' -- ver eventoProgramado.js.
+    try {
+      const { reintentar, fallidos } = gestorEventos.recuperarEnviandoInterrumpidos();
+      if (reintentar || fallidos) {
+        console.warn(`PROGRAMADOR: avisos interrumpidos al arrancar -- ${reintentar} a reintentar, ${fallidos} marcados FALLIDO.`);
+      }
+    } catch (error) {
+      console.error('PROGRAMADOR: no se pudieron recuperar los avisos interrumpidos:', error.message);
+    }
+
     setInterval(cicloDeSeguimiento, intervaloMin * 60 * 1000);
     console.log(`Programador de recordatorios/reseñas iniciado (revisa cada ${intervaloMin} minutos).`);
   }

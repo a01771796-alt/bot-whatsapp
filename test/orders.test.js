@@ -108,7 +108,7 @@ test('flujo completo: pedido -> marcar entregado -> Motor B manda la solicitud d
   assert.equal(fetchDespues.llamadas.length, 1);
   assert.equal(fetchDespues.llamadas[0].body.template.name, 'plantilla_resena_cafe');
   assert.deepEqual(fetchDespues.llamadas[0].body.template.components[0].parameters.map((p) => p.text), [
-    'cliente', // guardarPedido no recibe nombreCliente en este giro -- ver orders.js
+    'cliente', // este pedido se guardo sin nombreCliente
     'Café La Esquina',
     'https://g.page/cafe',
   ]);
@@ -133,4 +133,13 @@ test('crearProgramador con solo Motor B activo corre sin necesitar Motor A confi
   fetchFalso.restaurar();
 
   assert.equal(fetchFalso.llamadas.length, 1);
+});
+
+test('guardarPedido guarda nombreCliente (y queda vacio si no se da)', () => {
+  const conNombre = guardarPedido('5215500004444', '1 latte', '  Erika  ');
+  const sinNombre = guardarPedido('5215500005555', '1 té');
+
+  assert.equal(conNombre.nombreCliente, 'Erika');
+  assert.equal(gestor.obtenerEventoPorId(conNombre.id).nombreCliente, 'Erika');
+  assert.equal(sinNombre.nombreCliente, '');
 });

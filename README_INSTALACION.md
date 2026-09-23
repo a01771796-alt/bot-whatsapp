@@ -206,6 +206,129 @@ la página no se abre (para que nadie más pueda verla).
 
 ---
 
+## Avisos al dueño fuera de la ventana de 24 horas (plantilla de respaldo)
+
+Los avisos al dueño (ticket nuevo, pedido nuevo) los inicia el bot, no son respuesta a
+algo que el dueño acaba de escribir. WhatsApp **solo permite texto libre y botones si el
+dueño le escribió al número del bot en las últimas 24 horas**. Pasado ese tiempo Meta
+rechaza el mensaje (error `131047`, "Re-engagement message"), y el dueño no se entera.
+
+Por eso el bot funciona así (función `avisarAlDueno` en `whatsapp.js`):
+
+1. Intenta primero el texto y los botones de siempre.
+2. Si eso falla por cualquier motivo, reintenta **una vez** con una plantilla aprobada por
+   Meta (la de abajo).
+3. Guarda el resultado (`ENVIADO`/`FALLIDO`, la hora y el error) en el ticket o pedido. Si
+   el aviso no llegó por ningún medio, en `/tickets` y en `/pedidos` aparece la marca
+   **⚠️ Aviso al dueño no llegó** junto al ticket o pedido (al pasar el cursor se ve el
+   motivo).
+
+La plantilla es opcional, pero **sin ella los avisos fuera de la ventana de 24 h siguen sin
+llegar** (ahora al menos quedan marcados en el dashboard y en los logs de Railway).
+
+### Crear la plantilla en Meta
+
+1. Entra a [business.facebook.com/wa/manage/message-templates](https://business.facebook.com/wa/manage/message-templates)
+   (o desde tu app de Meta for Developers → WhatsApp → Message Templates).
+2. Crea la plantilla con estos datos:
+
+   | Campo | Valor |
+   |---|---|
+   | Nombre | `aviso_dueno` (o el que prefieras; va en `WHATSAPP_PLANTILLA_AVISO_DUENO`) |
+   | Categoría | **Utility** (es un aviso de servicio al dueño, no publicidad) |
+   | Idioma | Spanish (MEX) — `es_MX` (o el de `WHATSAPP_IDIOMA_PLANTILLA`) |
+   | Botones | Ninguno |
+
+   **Texto del cuerpo:**
+   > Hola, tienes un nuevo aviso de {{1}} en tu negocio. Resumen: {{2}}. Revísalo aquí: {{3}} Este es un mensaje automático.
+
+   **Parámetros** (el orden tiene que coincidir con el que manda el código):
+
+   | Variable | Qué lleva | Valor de ejemplo para enviar a Meta |
+   |---|---|---|
+   | `{{1}}` | Tipo de aviso | `ticket` |
+   | `{{2}}` | Resumen del aviso, en **una sola línea** y de **máximo 200 caracteres** | `ALTA \| QUEJA \| Ticket TK-20260910-151042-3 \| Cliente: 5215512345678 \| Mensaje: "el café llegó frío otra vez"` |
+   | `{{3}}` | Link para ver el detalle (el dashboard). En los avisos de pedido va un guion `—`, porque no llevan link | `https://tu-bot.up.railway.app/conversacion?numero=5215512345678&token=abc123` |
+
+   Notas:
+   - El cuerpo empieza y termina con texto fijo (Meta rechaza o reclasifica como Marketing
+     las plantillas que empiezan o terminan con una variable, o que casi no tienen texto
+     fijo). Si cambias el texto, conserva eso.
+   - Meta no acepta saltos de línea, tabs ni más de 4 espacios seguidos dentro de una
+     variable: el bot junta el resumen en una sola línea (separado con ` | `) antes de
+     enviarlo. Si el resumen pasa de 200 caracteres se recorta (sin dejar un link a
+     medias). El link de `{{3}}` nunca se recorta.
+   - Por la vía de plantilla el dueño recibe **un solo link** (a la conversación con el
+     cliente). Los botones "Marcar en revisión" / "Marcar resuelto" solo llegan por la vía
+     normal. Con la plantilla, desde la conversación toca "← Tickets": en esa lista están
+     los mismos "Marcar en revisión" y "Marcar como resuelto".
+   - Meta puede reclasificar la plantilla de Utility a Marketing si le parece
+     promocional. Revisa la categoría en WhatsApp Manager cuando la aprueben.
+
+3. Manda la plantilla a aprobación (tarda desde unas horas hasta 1-2 días). Mientras no
+   esté aprobada **no se puede usar**.
+4. En Railway, agrega estas variables:
+
+   | Variable | Valor |
+   |---|---|
+   | `WHATSAPP_PLANTILLA_AVISO_DUENO` | el nombre EXACTO de la plantilla (ej. `aviso_dueno`) |
+   | `WHATSAPP_PLANTILLA_AVISO_DUENO_APROBADA` | `false` hasta que Meta la marque **"Approved"**; recién entonces `true` |
+   | `WHATSAPP_IDIOMA_PLANTILLA` | el idioma con el que la creaste (ej. `es_MX`) |
+
+   **La bandera `_APROBADA` empieza en `false` a propósito** (mismo patrón que la plantilla
+   de reseñas): mientras esté así el bot nunca intenta mandar la plantilla, porque un envío
+   real contra una plantilla que Meta no aprobó afecta la calidad del número de WhatsApp
+   Business.
+
+---
+
+## Plantilla de WhatsApp para la solicitud de reseña (Motor B)
+
+Este bot no manda recordatorios de anticipación (Motor A no aplica: las recogidas son el
+mismo día). Solo manda, un rato después de marcar el pedido como entregado, una solicitud
+de reseña de Google (`ACTIVAR_SOLICITUD_RESENA`). Eso ocurre normalmente fuera de la
+ventana de 24 h de Meta, así que exige una **plantilla de mensaje aprobada**; sin ella no
+sale nada (el bot no truena, solo lo anota en los logs de Railway).
+
+1. Entra a [business.facebook.com/wa/manage/message-templates](https://business.facebook.com/wa/manage/message-templates)
+   (WABA de este cliente) y crea la plantilla `solicitud_resena`: **categoría "Utility"**
+   (no "Marketing"), idioma **Spanish (MEX)** (`es_MX`, o el de `WHATSAPP_IDIOMA_PLANTILLA`),
+   sin botones ni footer:
+
+   > ¡Hola {{1}}! Gracias por visitar {{2}}. Si te gustó tu experiencia, ¿nos ayudarías con una breve reseña en Google? {{3}} ¡Gracias!
+
+   Parámetros (en este orden exacto, ver `seguimientoPostEvento.js`): `{{1}}` = nombre del
+   cliente (ej. `Vale`; si no se tiene, el bot manda "cliente"), `{{2}}` = `NOMBRE_NEGOCIO`
+   (ej. `Café Aroma`), `{{3}}` = link de reseña de Google (ej. `https://g.page/r/prueba123/review`).
+   El cierre "¡Gracias!" es obligatorio: Meta rechaza una plantilla que termine en una variable.
+2. Manda a aprobación (de unas horas a 1-2 días) y revisa que Meta la deje en **Utility**.
+3. En Railway:
+
+   | Variable | Valor |
+   |---|---|
+   | `ACTIVAR_SOLICITUD_RESENA` | `true` para activar |
+   | `WHATSAPP_PLANTILLA_RESENA` | `solicitud_resena` |
+   | `WHATSAPP_PLANTILLA_RESENA_APROBADA` | `false` hasta que Meta la marque "Approved"; recién entonces `true` |
+   | `RESENA_ESPERA_HORAS` | horas de espera tras marcar el pedido como entregado (`0.5` = 30 min) |
+   | `WHATSAPP_IDIOMA_PLANTILLA` | el idioma con el que la creaste (ej. `es_MX`) |
+
+   La bandera `..._APROBADA` empieza en `false` a propósito: mientras no esté en `true`, el
+   bot nunca intenta mandar la plantilla (un envío contra una no aprobada afecta la
+   reputación del número).
+
+### El link de reseña de Google
+
+En la pestaña de información del negocio del Sheet agrega la fila con el link (acepta una
+sola celda `Link de reseña Google: https://...`, o dos columnas `Link de reseña Google` |
+`https://...`). Solo se acepta un link de **Google** (`google.com`, `g.page`, `goo.gl` o
+`maps.app.goo.gl`); cualquier otro se trata como si la fila estuviera vacía.
+
+- Si falta o es inválido, la reseña no se manda y el bot le avisa **una sola vez** al dueño
+  por WhatsApp (aviso tipo `CONFIG`); no lo repite en cada ciclo. Al corregir el link, el
+  aviso se rearma solo.
+- Solo se piden reseñas de pedidos entregados hace **menos de 48 horas**; los más viejos
+  se ignoran.
+
 ## Cómo el dueño del negocio actualiza su información (sin tocar código)
 
 Solo tiene que editar el Google Sheet del Paso 1 y guardar. El bot lee los cambios
