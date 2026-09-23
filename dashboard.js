@@ -37,6 +37,7 @@ const {
 const { enviarMensajeWhatsApp, avisarAlDueno } = require('./whatsapp');
 const { agregarMensaje, obtenerConversacion, respaldarConversaciones, vaciarConversaciones } = require('./conversaciones');
 const { gestor: gestorPedidos, obtenerPedidos } = require('./orders');
+const { hoyISO } = require('./eventoProgramado');
 
 const router = express.Router();
 router.use(express.urlencoded({ extended: true })); // Para leer el formulario de respuesta.
@@ -120,10 +121,88 @@ function marcaAvisoFallido(avisoDueno) {
   return `<br><span class="etiqueta aviso-fallido" title="${escaparHtml(detalle)}">⚠️ Aviso al dueño no llegó</span>`;
 }
 
+// Orden de la tabla de tickets: ALTA arriba y, dentro de cada prioridad, por
+// hora de llegada (el mas reciente primero, igual que antes).
+const ORDEN_PRIORIDAD = { ALTA: 0, MEDIA: 1 };
+function ordenarTickets(tickets) {
+  return [...tickets].sort((a, b) =>
+    (ORDEN_PRIORIDAD[a.prioridad] ?? 9) - (ORDEN_PRIORIDAD[b.prioridad] ?? 9) ||
+    new Date(b.fecha) - new Date(a.fecha));
+}
+
+const esFallido = (...avisos) => avisos.some((a) => a?.estado === 'FALLIDO');
+
+router.get('/novedades', (req, res) => {
+  if (!tokenValido(req)) return res.status(403).send('No autorizado.');
+  res.json(contarNovedades());
+});
+
+// Banner "hay algo nuevo" para la parte superior del dashboard. Cada 45 s
+// pide /novedades y compara contra el ultimo conteo que el operador marco como
+// visto (guardado en localStorage del navegador, no en el servidor). La
+// primera vez solo guarda la base, sin avisar.
+function bannerNovedades(token) {
+  return `
+    <div id="banner-novedades" style="display:none;background:#ff3b30;color:white;padding:10px 14px;border-radius:10px;margin-bottom:12px;font-size:.9rem;font-weight:600;">
+      🔔 <span id="texto-novedades"></span>
+      <button id="visto-novedades" style="margin-left:10px;border:none;border-radius:8px;padding:4px 10px;cursor:pointer;">Visto</button>
+    </div>
+    <script>
+      (function () {
+        const CLAVE = 'novedadesVistas';
+        const ETIQUETAS = ${JSON.stringify(ETIQUETAS_NOVEDADES)};
+        let actual = null;
+        function leerVisto() { try { return JSON.parse(localStorage.getItem(CLAVE)); } catch (e) { return null; } }
+        function guardarVisto(c) { try { localStorage.setItem(CLAVE, JSON.stringify(c)); } catch (e) {} }
+        function revisar() {
+          fetch('/novedades?token=${encodeURIComponent(token || '')}').then((r) => r.json()).then((c) => {
+            actual = c;
+            const visto = leerVisto();
+            if (!visto) return guardarVisto(c);
+            const nuevos = Object.keys(ETIQUETAS).filter((k) => c[k] > (visto[k] || 0)).map((k) => (c[k] - (visto[k] || 0)) + ' ' + ETIQUETAS[k]);
+            document.getElementById('texto-novedades').textContent = 'Nuevo: ' + nuevos.join(' · ');
+            document.getElementById('banner-novedades').style.display = nuevos.length ? 'block' : 'none';
+          }).catch(() => {});
+        }
+        document.getElementById('visto-novedades').onclick = function () {
+          if (actual) guardarVisto(actual);
+          document.getElementById('banner-novedades').style.display = 'none';
+        };
+        revisar();
+        setInterval(revisar, 45000);
+      })();
+    </script>
+  `;
+}
+
+// Tarjeta "Pedidos del dia": pedidos creados hoy (zona del negocio),
+// separados en entregados (COMPLETADA) y pendientes.
+function contarPedidosDelDia(pedidos, fecha = hoyISO()) {
+  const zona = process.env.ZONA_HORARIA || 'America/Mexico_City';
+  const delDia = pedidos.filter((p) => new Date(p.creadaEn).toLocaleDateString('en-CA', { timeZone: zona }) === fecha);
+  return {
+    entregados: delDia.filter((p) => p.estado === 'COMPLETADA').length,
+    pendientes: delDia.filter((p) => p.estado === 'PENDIENTE').length,
+  };
+}
+
+const ETIQUETAS_NOVEDADES = { ticketsSinRevisar: 'ticket(s) sin revisar', pedidosHoy: 'pedido(s) nuevo(s) hoy', avisosFallidos: 'aviso(s) al dueño FALLIDO(s)' };
+function contarNovedades() {
+  const tickets = obtenerTickets();
+  const pedidos = obtenerPedidos();
+  const hoy = contarPedidosDelDia(pedidos);
+  return {
+    ticketsSinRevisar: tickets.filter((t) => t.estado === 'PENDIENTE').length,
+    pedidosHoy: hoy.entregados + hoy.pendientes,
+    avisosFallidos: tickets.filter((t) => esFallido(t.avisoDueno)).length + pedidos.filter((p) => esFallido(p.avisoDueno)).length,
+  };
+}
+
 router.get('/tickets', (req, res) => {
   if (!tokenValido(req)) return res.status(403).send('No autorizado.');
 
-  const tickets = obtenerTickets().sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  const tickets = ordenarTickets(obtenerTickets());
+  const pedidosHoy = contarPedidosDelDia(obtenerPedidos());
 
   const total = tickets.length;
   const pendientes = tickets.filter((t) => t.estado === 'PENDIENTE').length;
@@ -186,6 +265,7 @@ router.get('/tickets', (req, res) => {
       </style>
     </head>
     <body>
+      ${bannerNovedades(req.query.token)}
       <div class="barra-superior">
         <h1>Tickets del bot ☕</h1>
         <div style="display:flex;gap:8px;">
@@ -206,6 +286,7 @@ router.get('/tickets', (req, res) => {
         <div class="kpi"><div class="valor">${prioridadAlta}</div><div class="etiqueta-kpi">Prioridad alta</div></div>
         <div class="kpi"><div class="valor">${tasaResolucion}%</div><div class="etiqueta-kpi">Tasa de resolución</div></div>
         <div class="kpi"><div class="valor">${tiempoPromedio ?? '—'}</div><div class="etiqueta-kpi">Min. promedio resolución</div></div>
+        <div class="kpi"><div class="valor">${pedidosHoy.entregados + pedidosHoy.pendientes}</div><div class="etiqueta-kpi">Pedidos del día (${pedidosHoy.entregados} entregados · ${pedidosHoy.pendientes} pendientes)</div></div>
       </div>
       <div class="tabla-scroll">
         <table>
@@ -279,6 +360,7 @@ router.get('/pedidos', (req, res) => {
       </style>
     </head>
     <body>
+      ${bannerNovedades(req.query.token)}
       <div class="barra-superior">
         <h1>Pedidos 📦</h1>
         <div style="display:flex;gap:8px;">
@@ -580,4 +662,4 @@ router.post('/reiniciar', (req, res) => {
   `);
 });
 
-module.exports = { router, linkAccion, linkConversacion, notificarTicketAlDuenio };
+module.exports = { router, linkAccion, linkConversacion, notificarTicketAlDuenio, ordenarTickets, contarPedidosDelDia, contarNovedades };
