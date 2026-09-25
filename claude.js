@@ -157,35 +157,35 @@ async function preguntarAClaude({ contextoNegocio, casosAprendidos, historial })
     },
   ];
 
-  // Desactivamos "thinking" a proposito: Claude Sonnet 5 lo activa solo (modo
-  // adaptativo) aunque no se pida, y para esta tarea (clasificar un mensaje
-  // corto en JSON) no aporta nada -- solo agrega un bloque extra en la
-  // respuesta y sube el costo/tiempo de cada llamada. Como este bot no usa
-  // "tools", no aplica el unico efecto secundario conocido de desactivarlo
-  // (que a veces escriba una llamada a herramienta como texto visible).
-  const configuracionThinking = { type: 'disabled' };
+  // Modelo configurable por cliente (ver .env.example). Con Haiku 4.5 el
+  // "thinking" adaptativo ya viene apagado si no se manda el parametro, asi
+  // que solo lo mandamos explicito para Sonnet -- Sonnet SI lo activa solo
+  // (modo adaptativo) aunque no se pida, y para esta tarea (clasificar un
+  // mensaje corto en JSON) no aporta nada, solo sube costo/tiempo. Como este
+  // bot no usa "tools", no aplica el unico efecto secundario conocido de
+  // desactivarlo (que a veces escriba una llamada a herramienta como texto
+  // visible).
+  const modelo = process.env.CLAUDE_MODEL || 'claude-haiku-4-5';
 
   // Un solo reintento ante fallas de red/servidor de la API, para no tronar el bot
   // por un problema pasajero de conexion.
+  const parametrosBase = {
+    model: modelo,
+    max_tokens: 400,
+    system: promptSistema,
+    messages: mensajes,
+  };
+  if (modelo === 'claude-sonnet-5') {
+    parametrosBase.thinking = { type: 'disabled' };
+  }
+
   let respuesta;
   try {
-    respuesta = await client.messages.create({
-      model: 'claude-sonnet-5',
-      max_tokens: 400,
-      system: promptSistema,
-      messages: mensajes,
-      thinking: configuracionThinking,
-    });
+    respuesta = await client.messages.create(parametrosBase);
   } catch (error) {
     console.error('Fallo la primera llamada a Claude, reintentando en 1 segundo:', error.message);
     await new Promise((resolve) => setTimeout(resolve, 1000));
-    respuesta = await client.messages.create({
-      model: 'claude-sonnet-5',
-      max_tokens: 400,
-      system: promptSistema,
-      messages: mensajes,
-      thinking: configuracionThinking,
-    });
+    respuesta = await client.messages.create(parametrosBase);
   }
 
   // Respuesta de respaldo para cuando algo salio mal leyendo lo que regreso la

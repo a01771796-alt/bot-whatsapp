@@ -102,6 +102,11 @@ situaciones, sin tocar código.
 2. Ve a **API Keys → Create Key**. Copia esa llave (empieza con `sk-ant-...`).
 3. Carga unos dólares de saldo (con $5-10 USD el negocio chico opera cómodo varios meses).
 
+**Modelo de Claude (`CLAUDE_MODEL`):** por default el bot usa `claude-haiku-4-5`
+(el modelo mas barato, suficiente para clasificar mensajes cortos). Si prefieres
+respuestas mas cuidadosas y el costo extra no es problema, puedes cambiar la
+variable `CLAUDE_MODEL` a `claude-sonnet-5` (el doble de precio) en el Paso 4.
+
 ---
 
 ## Paso 4 — Subir el bot a Railway (para que esté prendido 24/7)
@@ -121,6 +126,7 @@ situaciones, sin tocar código.
    | `WHATSAPP_PHONE_NUMBER_ID` | Paso 2 |
    | `WHATSAPP_VERIFY_TOKEN` | La inventas tú (ej: `cafelaesquina2026`) |
    | `ANTHROPIC_API_KEY` | Paso 3 |
+   | `CLAUDE_MODEL` | Opcional -- déjalo como `claude-haiku-4-5` salvo que quieras el modelo más cuidadoso (`claude-sonnet-5`, el doble de precio) |
    | `NOMBRE_NEGOCIO` | El nombre real del negocio |
    | `OWNER_WHATSAPP_NUMBER` | El WhatsApp del dueño, con código de país, ej: `5215512345678` |
    | `GOOGLE_SHEET_CSV_URL` | Paso 1 |
