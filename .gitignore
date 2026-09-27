@@ -8,3 +8,6 @@ respaldo_*.json
 pedidos_respaldo_*.json
 *.log
 .claude/
+
+# Generados por el bot en tiempo de ejecucion (datos reales)
+respaldos/
